@@ -34,7 +34,11 @@ def make_layer_window(
     """A transparent, undecorated GTK window placed with wlr-layer-shell."""
     win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
     win.set_decorated(False)
-    win.set_resizable(False)
+    # The window must stay resizable: gtk-layer-shell sizes anchored windows by
+    # forcing geometry hints, and GTK computes the hints of a non-resizable
+    # window from its guessed default size. For height-for-width content (flow
+    # boxes, wrapping labels) that guess is 200x1 and the compositor's size is
+    # never applied, so the window maps as a one-pixel strip.
     win.set_app_paintable(True)
     visual = win.get_screen().get_rgba_visual()
     if visual is not None:
