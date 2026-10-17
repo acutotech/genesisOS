@@ -159,6 +159,7 @@ class WallpaperManager:
             pix = pix.apply_embedded_orientation() or pix
         except GLib.Error as exc:
             log.warning("cannot load wallpaper %s: %s", path, exc)
+            self._original = (path, None)  # remembered: the draw handler asks on every frame
             return None
         self._original = (path, pix)
         return pix
@@ -252,7 +253,10 @@ class WallpaperManager:
                 self._generate_blur(key, file, pixbuf)
             except Exception:  # noqa: BLE001
                 log.exception("blur generation failed; surfaces stay plain for this wallpaper")
+            if not file.is_file():
+                # remembered until the wallpaper changes; otherwise every redraw would retry
                 self._failed_blur.add(key)
+                log.warning("no blurred copy for %s; glass surfaces stay plain", key[0])
             GLib.idle_add(self._blur_ready, key)
 
         threading.Thread(target=worker, name="wallpaper-blur", daemon=True).start()

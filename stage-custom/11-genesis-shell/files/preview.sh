@@ -25,7 +25,11 @@ if [ -z "${GENESIS_PREVIEW_INNER:-}" ]; then
 	unset WAYLAND_DISPLAY DISPLAY
 	echo "preview: starting labwc headless, output in $OUT"
 	# a private session bus, the compositor, and this script as the session client
-	dbus-run-session -- labwc -C /etc/xdg/genesis/labwc -S "$0 $OUT" > "$OUT/compositor.log" 2>&1
+	# (-S: session command, labwc >= 0.8; older releases only have -s, a startup
+	# command, and are told to exit by the inner script instead)
+	session_flag=-S
+	labwc --help 2>&1 | grep -q -- '-S' || session_flag=-s
+	dbus-run-session -- labwc -C /etc/xdg/genesis/labwc "$session_flag" "$0 $OUT" > "$OUT/compositor.log" 2>&1
 	status=$?
 	if [ -f "$OUT/result" ]; then
 		status=$(cat "$OUT/result")
