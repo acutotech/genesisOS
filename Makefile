@@ -4,7 +4,7 @@ SHELL := /bin/bash
 # Shell sources: scripts, stage scripts, and the sourced config files.
 SH_FILES := $(shell find . -path ./pi-gen -prune -o -path ./build -prune -o -path ./.git -prune -o \
               \( -name '*.sh' -o -name 'config' -o -name 'custom.conf' -o -name 'genesis-helper' \
-              -o -name 'genesis-session' -o -name 'genesis-session-start' -o -name 'genesis-respawn' \
+              -o -name 'genesis-session' -o -name 'genesis-session-start' -o -name 'genesis-respawn' -o -name 'genesis-fallback' \
               -o -name 'genesis-shell' -o -name 'genesis-shell-ctl' -o -name 'genesis-settings' \) -type f -print | sort)
 PY_FILES := $(shell find . -path ./pi-gen -prune -o -path ./build -prune -o -path ./.git -prune -o \
               \( -name '*.py' -o -name 'genesis-xdg-autostart' -o -name 'genesis-idle' \) -type f -print | sort)

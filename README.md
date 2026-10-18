@@ -68,9 +68,9 @@ Why these choices, in two sentences each:
 
    | Secret | Value for the NodoAI box |
    | --- | --- |
-   | `FIRST_USER_PASS` | `root@nodoai`. Must not contain `"`, `$`, `` ` `` or `\` (pi-gen limitation; the workflow checks) |
-   | `WIFI_SSID` | `NodoAI` |
-   | `WIFI_PASSWORD` | `nodoai@123` |
+   | `FIRST_USER_PASS` | the login password for `nodoai` (keep it out of the repository; it must not contain `"`, `$`, `` ` `` or `\`, a pi-gen limitation the workflow checks) |
+   | `WIFI_SSID` | the network name the box joins (`NodoAI` for the product network) |
+   | `WIFI_PASSWORD` | that network's passphrase |
    | `SSH_AUTHORIZED_KEYS` | optional: your public key(s) |
 
 3. *Actions → Build image → Run workflow*, or push to `main`. The workflow
@@ -91,7 +91,7 @@ Why these choices, in two sentences each:
 
 With the secrets above set, the box boots to the Genesis splash, logs
 `nodoai` into the Genesis desktop, joins the `NodoAI` Wi-Fi, and answers on
-`nodobox.local` for SSH and VNC with the password `root@nodoai`. Without
+`nodobox.local` for SSH and VNC with the `FIRST_USER_PASS` password. Without
 `FIRST_USER_PASS` the image behaves like the official one: the first-boot
 wizard asks for a username and password.
 
@@ -182,7 +182,7 @@ know, so nothing can apply to one build path only. Keep secrets out of it.
 | Knob | Does |
 | --- | --- |
 | `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_HIDDEN`, `WIFI_INTERFACE` | Wi-Fi written to `/boot/firmware/network-config` |
-| `ENABLE_I2C`, `ENABLE_SPI`, `ENABLE_UART` | `dtparam=i2c_arm=on`, `dtparam=spi=on`, `enable_uart=1` in `config.txt` |
+| `ENABLE_I2C`, `ENABLE_SPI`, `ENABLE_SERIAL_PORT` | `dtparam=i2c_arm=on`, `dtparam=spi=on`, `enable_uart=1` in `config.txt` |
 | `CONFIG_TXT_EXTRA` | any further `config.txt` lines, appended under `[all]` |
 | `PERSISTENT_JOURNAL`, `JOURNAL_MAX_USE` | journald storage |
 | `ENABLE_UNATTENDED_UPGRADES` | automatic updates from Debian security and the Raspberry Pi archive |

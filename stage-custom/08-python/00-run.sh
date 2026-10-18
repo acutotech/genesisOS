@@ -53,10 +53,7 @@ rm -rf "\$tmp"
 /usr/local/bin/uv --version
 EOF
 
-install -d -m 755 "${ROOTFS_DIR}/etc/profile.d"
-cat > "${ROOTFS_DIR}/etc/profile.d/genesis-python.sh" << 'EOF'
-# Genesis OS: "python" is CPython from /opt/python (user default); "python3" is the OS interpreter.
-export UV_PYTHON_INSTALL_DIR=/opt/python/uv
-EOF
-chmod 644 "${ROOTFS_DIR}/etc/profile.d/genesis-python.sh"
+# uv keeps the interpreters it installs under the user's ~/.local/share/uv (its
+# default); /opt/python is root-owned and only holds the image's own CPython.
+rm -f "${ROOTFS_DIR}/etc/profile.d/genesis-python.sh"
 log "Python ${PY_VERSION} will be installed as /usr/local/bin/python (python3 stays the OS interpreter)"

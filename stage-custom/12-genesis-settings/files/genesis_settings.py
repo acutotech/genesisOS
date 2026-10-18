@@ -588,7 +588,6 @@ class GenesisSettings(Gtk.Window):
         sound.connect("clicked", lambda _b: self.launch(["pavucontrol"]))
         return page("Display & Sound", card([
             Row("Displays", "Resolution, rotation and arrangement", screens),
-            Row("Screen blanking", "Turn the screen off after a period of inactivity", self.make_switch("blanking", False)),
             Row("Audio", "Output device, volume and input levels", sound),
         ]))
 

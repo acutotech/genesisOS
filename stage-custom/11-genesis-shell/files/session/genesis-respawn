@@ -1,24 +1,48 @@
 #!/bin/sh
 # Keep a session component running while this labwc instance lives (like
-# Raspberry Pi's lwrespawn). Exit codes 0 and 2 (clean quit, already running)
+# Raspberry Pi's lwrespawn). Exit code 0 (clean quit) and 2 (already running)
 # stop the loop; anything else restarts the program with a growing pause.
+# Five failures in a row within 30 seconds of starting mean the program cannot
+# start at all: the loop gives up and, when --fallback was given, runs that
+# command instead so the user is not left with a black screen.
 #
-# Usage: genesis-respawn PROGRAM [ARGS...]
+# Usage: genesis-respawn [--fallback COMMAND] PROGRAM [ARGS...]
 
+FALLBACK=""
+if [ "${1:-}" = "--fallback" ]; then
+	FALLBACK="${2:-}"
+	shift 2
+fi
 if [ $# -eq 0 ]; then
-	echo "usage: genesis-respawn PROGRAM [ARGS...]" >&2
+	echo "usage: genesis-respawn [--fallback COMMAND] PROGRAM [ARGS...]" >&2
 	exit 64
 fi
 
 COMPOSITOR="${LABWC_PID:-$(pidof labwc 2> /dev/null | cut -d' ' -f1)}"
 pause=1
+fails=0
 while [ -z "$COMPOSITOR" ] || kill -0 "$COMPOSITOR" 2> /dev/null; do
+	started=$(date +%s)
 	"$@"
 	status=$?
 	case "$status" in
 		0 | 2) exit "$status" ;;
 	esac
-	echo "genesis-respawn: $1 exited with status $status, restarting in ${pause}s" >&2
+	ran=$(($(date +%s) - started))
+	if [ "$ran" -lt 30 ]; then
+		fails=$((fails + 1))
+	else
+		fails=0
+		pause=1
+	fi
+	echo "genesis-respawn: $1 exited with status $status after ${ran}s (${fails} quick failure(s) in a row)" >&2
+	if [ "$fails" -ge 5 ]; then
+		echo "genesis-respawn: $1 cannot start; giving up${FALLBACK:+ and starting the fallback: $FALLBACK}" >&2
+		if [ -n "$FALLBACK" ]; then
+			exec "$FALLBACK" "$1"
+		fi
+		exit "$status"
+	fi
 	sleep "$pause"
 	if [ "$pause" -lt 10 ]; then
 		pause=$((pause * 2))

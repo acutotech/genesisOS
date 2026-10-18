@@ -2,7 +2,7 @@
 # Privileged helper for Genesis Settings. Runs as root via sudo/pkexec.
 #
 #   genesis-helper get <item>                 (works unprivileged)
-#   genesis-helper set <item> 0|1             items: i2c spi serial_hw serial_cons onewire ssh vnc camera blanking splash sudo_nopass autologin
+#   genesis-helper set <item> 0|1             items: i2c spi serial_hw serial_cons onewire ssh vnc camera splash sudo_nopass autologin
 #   genesis-helper session genesis|rpd        default desktop session for lightdm (Genesis, or Raspberry Pi's labwc desktop)
 #   genesis-helper greeter-wallpaper <file>   login screen wallpaper
 #   genesis-helper hostname <name>
@@ -34,7 +34,6 @@ get_item() {
 		camera) "$RC" nonint get_camera ;;
 		ssh) "$RC" nonint get_ssh ;;
 		vnc) unit_enabled wayvnc.service ;;
-		blanking) "$RC" nonint get_blanking ;;
 		splash) "$RC" nonint get_boot_splash ;;
 		sudo_nopass) "$RC" nonint get_sudo_pass ;;
 		autologin) "$RC" nonint get_autologin ;;
@@ -65,7 +64,6 @@ set_item() {
 				systemctl disable wayvnc.service || true
 				systemctl stop wayvnc.service || true
 			fi ;;
-		blanking) "$RC" nonint do_blanking "$val" ;;
 		splash) "$RC" nonint do_boot_splash "$val" ;;
 		sudo_nopass) "$RC" nonint do_sudo_pass "$val" ;;
 		autologin) if [ "$val" = 0 ]; then "$RC" nonint do_boot_behaviour B4; else "$RC" nonint do_boot_behaviour B3; fi ;;

@@ -1,0 +1,32 @@
+#!/bin/sh
+# Last resort when Genesis Shell keeps failing to start: put a usable desktop on
+# the screen and show the error, instead of leaving the user with a black screen.
+# Run by genesis-respawn (--fallback) with the failed program as the argument.
+#
+# Uses what the Raspberry Pi desktop packages provide when they are installed
+# (pcmanfm desktop, wf-panel-pi), a dialog if zenity exists, otherwise a terminal
+# showing the end of the session log.
+
+FAILED="${1:-genesis-shell}"
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/genesis/session.log"
+echo "genesis-fallback: $FAILED failed to start repeatedly; starting the fallback desktop" >&2
+
+if command -v pcmanfm > /dev/null 2>&1; then
+	pcmanfm --desktop --profile LXDE-pi &
+fi
+if command -v wf-panel-pi > /dev/null 2>&1; then
+	wf-panel-pi &
+fi
+
+MSG="Genesis Shell could not start, so this basic desktop was started instead.
+The reason is at the end of $LOG.
+Right-click the desktop for a menu with a terminal and Log Out.
+To use the stock Raspberry Pi desktop from the next login, run:
+  sudo genesis-helper session rpd"
+
+if command -v zenity > /dev/null 2>&1; then
+	zenity --warning --title="Genesis OS" --width=520 --text="$MSG" &
+elif command -v lxterminal > /dev/null 2>&1; then
+	lxterminal --title="Genesis OS recovery" -e sh -c "printf '%s\n\n' \"\$0\"; tail -n 40 \"\$1\" 2> /dev/null; printf '\n'; exec \"\${SHELL:-sh}\"" "$MSG" "$LOG" &
+fi
+wait

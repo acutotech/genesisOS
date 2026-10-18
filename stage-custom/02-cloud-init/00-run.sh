@@ -62,4 +62,4 @@ fi
 } > "${BOOT}/network-config"
 chmod 644 "${BOOT}/network-config"
 
-log "Wrote Wi-Fi configuration for SSID '${WIFI_SSID}' (interface ${WIFI_INTERFACE}) to network-config"
+log "Wrote Wi-Fi configuration (interface ${WIFI_INTERFACE}) to network-config"

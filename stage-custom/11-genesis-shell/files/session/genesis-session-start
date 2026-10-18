@@ -19,7 +19,7 @@ if command -v kanshi > /dev/null 2>&1; then
 	kanshi &
 fi
 
-/usr/bin/genesis-respawn /usr/bin/genesis-shell &
+/usr/bin/genesis-respawn --fallback /usr/bin/genesis-fallback /usr/bin/genesis-shell &
 /usr/bin/genesis-idle &
 /usr/bin/genesis-xdg-autostart &
 

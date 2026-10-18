@@ -125,7 +125,7 @@ inst 755 "$HERE/install.sh" /usr/share/genesis-shell/install.sh
 inst 755 "$HERE/preview.sh" /usr/share/genesis-shell/preview.sh
 
 # ---- session programs ----------------------------------------------------------------
-for prog in genesis-session genesis-session-start genesis-respawn genesis-shell genesis-shell-ctl genesis-xdg-autostart genesis-idle; do
+for prog in genesis-session genesis-session-start genesis-respawn genesis-fallback genesis-shell genesis-shell-ctl genesis-xdg-autostart genesis-idle; do
 	inst 755 "$HERE/session/$prog" "/usr/bin/$prog"
 done
 inst 644 "$HERE/session/genesis.desktop" /usr/share/wayland-sessions/genesis.desktop

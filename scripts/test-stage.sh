@@ -109,7 +109,7 @@ run_stage() {
 # Reset every custom.conf knob so scenarios do not bleed into each other.
 reset_knobs() {
 	unset WIFI_SSID WIFI_PASSWORD WIFI_HIDDEN WIFI_INTERFACE
-	unset ENABLE_I2C ENABLE_SPI ENABLE_UART CONFIG_TXT_EXTRA
+	unset ENABLE_I2C ENABLE_SPI ENABLE_SERIAL_PORT ENABLE_SERIAL_CONSOLE CONFIG_TXT_EXTRA
 	unset PERSISTENT_JOURNAL JOURNAL_MAX_USE ENABLE_UNATTENDED_UPGRADES
 	unset ENABLE_SERVICES DISABLE_SERVICES PASSWORDLESS_SUDO
 	unset ENABLE_SERIAL_PORT ENABLE_SERIAL_CONSOLE ENABLE_ONEWIRE ENABLE_VNC GENESIS_WALLPAPER GENESIS_ACCENT GENESIS_BLANK_TIMEOUT
@@ -200,7 +200,7 @@ assert_grep '@define-color genesis_accent #4f8cff;' "${ROOTFS_DIR}/usr/share/the
 assert_file "${ROOTFS_DIR}/usr/lib/genesis-shell/genesis_shell/app.py"
 assert_file "${ROOTFS_DIR}/usr/lib/genesis-shell/genesis_shell/shell.css"
 assert_file "${ROOTFS_DIR}/usr/share/genesis-shell/protocols/wlr-foreign-toplevel-management-unstable-v1.xml"
-for prog in genesis-session genesis-session-start genesis-respawn genesis-shell genesis-shell-ctl genesis-xdg-autostart genesis-idle; do
+for prog in genesis-session genesis-session-start genesis-respawn genesis-fallback genesis-shell genesis-shell-ctl genesis-xdg-autostart genesis-idle; do
 	assert_exec "${ROOTFS_DIR}/usr/bin/${prog}"
 done
 assert_exec "${ROOTFS_DIR}/usr/share/genesis-shell/preview.sh"
@@ -291,7 +291,7 @@ assert_grep '^blank_timeout = 0$' "${ROOTFS_DIR}/etc/genesis/shell.conf"
 assert_grep '@define-color genesis_accent #ff8800;' "${ROOTFS_DIR}/usr/share/themes/GenesisGlass/gtk-3.0/gtk.css"
 assert_grep '^gtk-color-scheme = "selected_bg_color:#ff8800"$' "${ROOTFS_DIR}/usr/share/themes/GenesisGlass/gtk-2.0/gtkrc"
 # the session scripts and the installer parse, and the control tool rejects garbage
-for prog in genesis-session genesis-session-start genesis-respawn genesis-shell genesis-shell-ctl; do
+for prog in genesis-session genesis-session-start genesis-respawn genesis-fallback genesis-shell genesis-shell-ctl; do
 	bash -n "${STAGE_DIR}/11-genesis-shell/files/session/${prog}" && ok "${prog} parses"
 done
 python3 -m py_compile "${STAGE_DIR}/11-genesis-shell/files/session/genesis-xdg-autostart" "${STAGE_DIR}/11-genesis-shell/files/session/genesis-idle" && ok "python session helpers compile"
