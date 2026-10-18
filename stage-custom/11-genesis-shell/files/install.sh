@@ -140,7 +140,6 @@ xwayland_line=""
 [ -x "$ROOT/usr/bin/xwayland-xauth" ] && xwayland_line="WLR_XWAYLAND=/usr/bin/xwayland-xauth"
 sed -e "s#@CURSOR_THEME@#${cursor}#" -e "s#@XWAYLAND_LINE@#${xwayland_line}#" "$HERE/labwc/environment.in" > "$ROOT/etc/xdg/genesis/labwc/environment"
 chmod 644 "$ROOT/etc/xdg/genesis/labwc/environment"
-inst 644 "$HERE/labwc/themerc" /usr/share/themes/GenesisGlass/labwc/themerc
 inst 644 "$HERE/genesis-portals.conf" /usr/share/xdg-desktop-portal/genesis-portals.conf
 
 # ---- shell defaults -----------------------------------------------------------------------
@@ -149,6 +148,12 @@ case "$ACCENT" in
 	\#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
 	*) echo "install.sh: --accent must be #rrggbb, got '$ACCENT'" >&2; exit 64 ;;
 esac
+# labwc >= 0.8 reads themes/<name>/labwc/, 0.6-0.7 only themes/<name>/openbox-3/; ship both with the accent substituted
+for d in labwc openbox-3; do
+	install -d -m 755 "$ROOT/usr/share/themes/GenesisGlass/$d"
+	sed -e "s/#4f8cff/${ACCENT}/g" "$HERE/labwc/themerc" > "$ROOT/usr/share/themes/GenesisGlass/$d/themerc"
+	chmod 644 "$ROOT/usr/share/themes/GenesisGlass/$d/themerc"
+done
 sed -e "s|@WALLPAPER@|${WALLPAPER}|" -e "s|@PANEL_POSITION@|${POSITION}|" -e "s|@LAUNCHERS@|${LAUNCHERS}|" \
 	-e "s|@ACCENT@|${ACCENT}|" -e "s|@BLANK_TIMEOUT@|${BLANK_TIMEOUT}|" "$HERE/shell.conf.in" > "$ROOT/etc/genesis/shell.conf"
 chmod 644 "$ROOT/etc/genesis/shell.conf"

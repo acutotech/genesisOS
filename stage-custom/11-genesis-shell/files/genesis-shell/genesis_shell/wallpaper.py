@@ -218,7 +218,7 @@ class WallpaperManager:
             stamp = str(int(os.stat(path).st_mtime))
         except OSError:
             stamp = "0"
-        digest = hashlib.sha1(f"{path}|{stamp}|{mode}|{w}x{h}|v2".encode()).hexdigest()[:16]
+        digest = hashlib.sha1(f"{path}|{stamp}|{mode}|{w}x{h}|v3".encode()).hexdigest()[:16]
         return CACHE_DIR / f"blur-{digest}.png"
 
     def blurred_surface(self, monitor: Gdk.Monitor) -> cairo.ImageSurface | None:
@@ -278,17 +278,18 @@ class WallpaperManager:
             scale = max(w / sw, h / sh)
             cw, ch = max(w, math.ceil(sw * scale)), max(h, math.ceil(sh * scale))
             img = img.resize((cw, ch), Image.BILINEAR).crop(((cw - w) // 2, (ch - h) // 2, (cw - w) // 2 + w, (ch - h) // 2 + h))
-            small = img.resize((max(1, w // 8), max(1, h // 8)), Image.BILINEAR).filter(ImageFilter.GaussianBlur(7))
+            small = img.resize((max(1, w // 4), max(1, h // 4)), Image.BILINEAR).filter(ImageFilter.GaussianBlur(5))
             big = small.resize((w, h), Image.BICUBIC)
-            big = ImageEnhance.Brightness(big).enhance(0.6)
+            big = ImageEnhance.Color(big).enhance(1.25)
+            big = ImageEnhance.Brightness(big).enhance(0.8)
             big.save(tmp, format="PNG", compress_level=3)
         except Exception as exc:  # noqa: BLE001 - PIL missing: pixbuf pseudo-blur
             log.info("PIL blur unavailable (%s); using pixbuf downscale", exc)
             if pixbuf is None:
                 return
-            tiny = pixbuf.scale_simple(max(1, w // 20), max(1, h // 20), GdkPixbuf.InterpType.BILINEAR)
+            tiny = pixbuf.scale_simple(max(1, w // 10), max(1, h // 10), GdkPixbuf.InterpType.BILINEAR)
             big = tiny.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
-            dark = big.composite_color_simple(w, h, GdkPixbuf.InterpType.NEAREST, 160, 1, 0x000000, 0x000000)
+            dark = big.composite_color_simple(w, h, GdkPixbuf.InterpType.NEAREST, 204, 1, 0x000000, 0x000000)
             (dark or big).savev(str(tmp), "png", [], [])
         tmp.replace(file)
 

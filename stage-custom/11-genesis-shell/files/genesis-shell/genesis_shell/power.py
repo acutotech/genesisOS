@@ -14,6 +14,7 @@ class PowerDialog(OverlayWindow):
     layer = GtkLayerShell.Layer.OVERLAY
     keyboard = GtkLayerShell.KeyboardMode.EXCLUSIVE
     backdrop_css = "dim-backdrop"
+    blur_backdrop = True
 
     def __init__(self, shell) -> None:
         super().__init__(shell, "genesis-power")
@@ -21,21 +22,23 @@ class PowerDialog(OverlayWindow):
 
     def build(self) -> Gtk.Widget:
         s = self.shell
-        glass = Glass(self.blur, self.origin, radius=24, orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        glass = Glass(self.blur, self.origin, radius=20, orientation=Gtk.Orientation.VERTICAL, spacing=20)
         add_class(glass, "card", "power-card")
-        glass.pack_start(label("Power", css=("title",)), False, False, 0)
-        glass.pack_start(label(f"{user_display_name()} on {socket.gethostname()}", css=("subtitle",)), False, False, 0)
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        head.pack_start(label("Power", css=("power-title",)), False, False, 0)
+        head.pack_start(label(f"{user_display_name()} on {socket.gethostname()}", css=("subtitle",)), False, False, 0)
+        glass.pack_start(head, False, False, 0)
         row = Gtk.Box(spacing=12)
         row.set_halign(Gtk.Align.CENTER)
         self.first_button = None
         for icon, text, cb, danger in (
             ("system-lock-screen-symbolic", "Lock", s.lock, False),
             ("system-log-out-symbolic", "Log Out", s.logout, False),
-            ("system-reboot-symbolic", "Restart", s.reboot, True),
+            ("system-reboot-symbolic", "Restart", s.reboot, False),
             ("system-shutdown-symbolic", "Shut Down", s.poweroff, True),
         ):
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-            box.pack_start(icon_image(icon, 30), False, False, 0)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            box.pack_start(icon_image(icon, 32), False, False, 0)
             box.pack_start(label(text), False, False, 0)
             btn = flat_button(box, css=("power-action",) + (("danger",) if danger else ()))
             btn.set_can_focus(True)
@@ -44,7 +47,7 @@ class PowerDialog(OverlayWindow):
             if self.first_button is None:
                 self.first_button = btn
         glass.pack_start(row, False, False, 0)
-        cancel = flat_button(label("Cancel"), css=("link-button",))
+        cancel = flat_button(label("Cancel"), css=("power-cancel",))
         cancel.set_halign(Gtk.Align.CENTER)
         cancel.connect("clicked", lambda _b: self.hide())
         glass.pack_start(cancel, False, False, 0)

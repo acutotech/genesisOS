@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from gi.repository import Gdk, Gtk, GtkLayerShell, Pango
 
@@ -20,19 +21,21 @@ class AppCell(Gtk.Button):
         self.score = 0
         self.set_relief(Gtk.ReliefStyle.NONE)
         add_class(self, "app-cell")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         box.pack_start(gicon_image(entry.icon, icon_size), False, False, 0)
-        name = label(entry.name, css=("app-label",))
+        # long names drop a trailing parenthetical ("ImageMagick (color depth=q16)"); the full name stays in the tooltip
+        shown = re.sub(r"\s*\([^()]*\)\s*$", "", entry.name).strip() if len(entry.name) > 18 else entry.name
+        name = label(shown or entry.name, css=("app-label",))
         name.set_justify(Gtk.Justification.CENTER)
         name.set_line_wrap(True)
-        name.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        name.set_line_wrap_mode(Pango.WrapMode.WORD)
         name.set_lines(2)
         name.set_ellipsize(Pango.EllipsizeMode.END)
-        name.set_max_width_chars(13)
+        name.set_max_width_chars(14)
         box.pack_start(name, False, False, 0)
         self.add(box)
-        self.set_size_request(max(96, icon_size + 48), -1)
-        self.set_tooltip_text(entry.generic or entry.name)
+        self.set_size_request(max(120, icon_size + 64), -1)
+        self.set_tooltip_text(entry.name if shown != entry.name else (entry.generic or entry.name))
 
 
 class Launcher(OverlayWindow):
@@ -52,8 +55,13 @@ class Launcher(OverlayWindow):
 
     def build(self) -> Gtk.Widget:
         cfg = self.shell.config
+        columns = max(4, min(10, cfg.getint("launcher", "columns")))
+        self.columns = columns
+        icon_size = max(32, min(96, cfg.getint("launcher", "icon_size")))
+        self.cell_w = max(120, icon_size + 64)
+        col_w = columns * self.cell_w + (columns - 1) * 12  # width of a full grid row; search and footer align to it
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        root.set_margin_top(96)
+        root.set_margin_top(88)
         root.set_margin_bottom(28)
         root.set_margin_start(40)
         root.set_margin_end(40)
@@ -62,7 +70,7 @@ class Launcher(OverlayWindow):
         add_class(self.search, "search-entry")
         self.search.set_placeholder_text("Search apps")
         self.search.set_icon_from_icon_name(Gtk.EntryIconPosition.PRIMARY, "system-search-symbolic")
-        self.search.set_size_request(560, -1)
+        self.search.set_size_request(min(640, col_w), -1)
         self.search.set_halign(Gtk.Align.CENTER)
         self.search.connect("changed", self._on_search_changed)
         self.search.connect("activate", lambda _e: self._activate_first())
@@ -75,6 +83,8 @@ class Launcher(OverlayWindow):
         for name in GROUP_NAMES:
             btn = Gtk.ToggleButton(label=name)
             add_class(btn, "chip")
+            btn.set_no_show_all(True)  # rebuild() shows only chips whose category has apps
+            btn.get_child().show()
             btn.set_can_focus(False)
             btn.set_active(name == "All")
             btn.connect("toggled", self._on_chip, name)
@@ -85,11 +95,10 @@ class Launcher(OverlayWindow):
         self.flow = Gtk.FlowBox()
         self.flow.set_selection_mode(Gtk.SelectionMode.NONE)
         self.flow.set_homogeneous(True)
-        columns = max(4, min(10, cfg.getint("launcher", "columns")))
         self.flow.set_max_children_per_line(columns)
         self.flow.set_min_children_per_line(min(4, columns))
-        self.flow.set_row_spacing(4)
-        self.flow.set_column_spacing(4)
+        self.flow.set_row_spacing(12)
+        self.flow.set_column_spacing(12)
         self.flow.set_halign(Gtk.Align.CENTER)
         self.flow.set_valign(Gtk.Align.START)
         self.flow.set_filter_func(self._filter, None)
@@ -108,17 +117,19 @@ class Launcher(OverlayWindow):
 
         footer = Gtk.Box(spacing=8)
         add_class(footer, "launcher-footer")
+        footer.set_halign(Gtk.Align.CENTER)
+        footer.set_size_request(col_w, -1)
         who = Gtk.Box(spacing=10)
         who.pack_start(avatar_image(32), False, False, 0)
         who.pack_start(label(user_display_name(), css=("title",)), False, False, 0)
         footer.pack_start(who, False, False, 0)
         actions = Gtk.Box(spacing=8)
-        for icon, tip, cb in (
-            ("preferences-system-symbolic", "Settings", lambda: self.shell.open_settings()),
-            ("system-lock-screen-symbolic", "Lock", self.shell.lock),
-            ("system-shutdown-symbolic", "Power", self.shell.show_power),
+        for icon, tip, cb, extra in (
+            ("preferences-system-symbolic", "Settings", lambda: self.shell.open_settings(), ()),
+            ("system-lock-screen-symbolic", "Lock", self.shell.lock, ()),
+            ("system-shutdown-symbolic", "Power", self.shell.show_power, ("danger",)),
         ):
-            btn = icon_button(icon, 16, tooltip=tip)
+            btn = icon_button(icon, 16, css=("round-button",) + extra, tooltip=tip)
             btn.connect("clicked", lambda _b, c=cb: (self.hide(), c()))
             actions.pack_start(btn, False, False, 0)
         footer.pack_end(actions, False, False, 0)
@@ -136,6 +147,11 @@ class Launcher(OverlayWindow):
             cell.connect("clicked", self._cell_clicked)
             self.cells.append(cell)
             self.flow.add(cell)
+        groups = {e.group for e in self.shell.apps.entries}
+        for name, btn in self.chip_buttons.items():
+            btn.set_visible(name == "All" or name in groups)
+        if self.group != "All" and self.group not in groups:
+            self.chip_buttons["All"].set_active(True)
         self.flow.show_all()
         self._rescore()
 
@@ -145,6 +161,11 @@ class Launcher(OverlayWindow):
             cell.score = cell.entry.score(q) if q else 1
         self.flow.invalidate_filter()
         self.flow.invalidate_sort()
+        # short result sets centre under the search box instead of hugging the left column
+        n = sum(1 for c in self.cells if c.score > 0 and (self.group == "All" or c.entry.group == self.group))
+        per_line = max(1, min(self.columns, n))
+        self.flow.set_min_children_per_line(per_line)
+        self.flow.set_max_children_per_line(per_line)
         self.empty.set_visible(self._first_visible() is None)
 
     def _filter(self, child, _data) -> bool:

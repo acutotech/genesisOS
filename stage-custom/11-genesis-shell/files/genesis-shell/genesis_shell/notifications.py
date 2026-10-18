@@ -10,7 +10,7 @@ from gi.repository import GdkPixbuf, Gio, GLib, Gtk, GtkLayerShell, Pango
 
 from .services import Service
 from .util import add_class, desktop_app_info, flat_button, gicon_image, icon_image, label, launch_app, make_layer_window
-from .widgets import Glass, OverlayWindow
+from .widgets import CARD_WIDTH, Glass, OverlayWindow, empty_state
 
 log = logging.getLogger("genesis.notifications")
 
@@ -45,6 +45,7 @@ INTERFACE_XML = """
 REASON_EXPIRED, REASON_DISMISSED, REASON_CLOSED = 1, 2, 3
 MAX_STORED = 60
 MAX_TOASTS = 4
+TOAST_MARGIN = (4, 10, 14, 10)  # top, right, bottom, left: room inside the layer window for the .toast drop shadow
 
 _IMG_TAG = re.compile(r"<img[^>]*>", re.I)
 _BR_TAG = re.compile(r"<br\s*/?>", re.I)
@@ -100,6 +101,8 @@ class Notification:
             pix = self.pixbuf if size == 48 else self.pixbuf.scale_simple(size, size, GdkPixbuf.InterpType.BILINEAR)
             return Gtk.Image.new_from_pixbuf(pix)
         for candidate in (self.image_path, self.app_icon):
+            if candidate == "dialog-information-symbolic":
+                continue  # the shell's own default icon: draw the accent roundel below instead of a bare glyph
             if candidate.startswith("file://"):
                 candidate = candidate[7:]
             if candidate.startswith("/"):
@@ -114,7 +117,10 @@ class Notification:
             info = desktop_app_info(self.desktop_entry)
             if info is not None and info.get_icon() is not None:
                 return gicon_image(info.get_icon(), size)
-        return icon_image("dialog-information-symbolic", size)
+        img = icon_image("dialog-information-symbolic", size // 2 + 4)  # glyph in an accent roundel
+        img.set_size_request(size + 4, size + 4)
+        add_class(img, "generic-icon")
+        return img
 
     def age_text(self) -> str:
         delta = int(time.time() - self.time)
@@ -255,20 +261,22 @@ class NotificationService(Service):
         self.notify()
 
 
-class Toast(Gtk.Box):
+class Toast(Glass):
     def __init__(self, stack: "ToastStack", n: Notification) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        super().__init__(stack.blur, stack.origin, radius=20, orientation=Gtk.Orientation.VERTICAL, spacing=8)
         add_class(self, "toast")
         self.stack = stack
         self.notification = n
-        self.set_size_request(360, -1)
+        self.set_size_request(CARD_WIDTH, -1)
         top = Gtk.Box(spacing=12)
-        top.pack_start(n.icon_widget(32), False, False, 0)
+        icon = n.icon_widget(28)
+        icon.set_valign(Gtk.Align.START)
+        top.pack_start(icon, False, False, 0)
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        if n.summary and n.app_name and n.app_name != n.summary:
+            texts.pack_start(label(n.app_name, css=("notif-app",), xalign=0, ellipsize=True), False, False, 0)
         head = Gtk.Box(spacing=6)
         head.pack_start(label(n.summary or n.app_name, css=("toast-summary",), xalign=0, ellipsize=True), True, True, 0)
-        if n.summary and n.app_name and n.app_name != n.summary:
-            head.pack_end(label(n.app_name, css=("notif-time",), ellipsize=True, max_chars=16), False, False, 0)
         texts.pack_start(head, False, False, 0)
         if n.body:
             body = Gtk.Label()
@@ -282,7 +290,7 @@ class Toast(Gtk.Box):
             body.set_max_width_chars(44)
             texts.pack_start(body, False, False, 0)
         top.pack_start(texts, True, True, 0)
-        close = flat_button(icon_image("window-close-symbolic", 14), css=("toast-close",))
+        close = flat_button(icon_image("window-close-symbolic", 16), css=("toast-close",))
         close.set_valign(Gtk.Align.START)
         close.connect("clicked", lambda _b: stack.service.close(n, REASON_DISMISSED))
         top.pack_end(close, False, False, 0)
@@ -321,30 +329,48 @@ class ToastStack:
         self.toasts: list[Toast] = []
         self.window = make_layer_window(
             namespace="genesis-notifications", layer=GtkLayerShell.Layer.OVERLAY,
-            anchors=(GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.RIGHT), margins={GtkLayerShell.Edge.TOP: 60, GtkLayerShell.Edge.RIGHT: 12},
+            anchors=(GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.RIGHT), margins={GtkLayerShell.Edge.TOP: 60, GtkLayerShell.Edge.RIGHT: 12 - TOAST_MARGIN[1]},
             exclusive=False, keyboard=GtkLayerShell.KeyboardMode.NONE,
         )
-        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)  # the wrapper margins provide the gap
         self.window.add(self.box)
+        self.monitor = None
 
     def _reposition(self) -> None:
         if self.shell.panel_position() == "bottom":
             GtkLayerShell.set_anchor(self.window, GtkLayerShell.Edge.TOP, False)
             GtkLayerShell.set_anchor(self.window, GtkLayerShell.Edge.BOTTOM, True)
-            GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.BOTTOM, self.shell.panel_thickness() + 10)
+            GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.BOTTOM, self.shell.panel_thickness() + 10 - TOAST_MARGIN[2])
         else:
             GtkLayerShell.set_anchor(self.window, GtkLayerShell.Edge.BOTTOM, False)
             GtkLayerShell.set_anchor(self.window, GtkLayerShell.Edge.TOP, True)
-            GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.TOP, self.shell.panel_thickness() + 10)
+            GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.TOP, self.shell.panel_thickness() + 10 - TOAST_MARGIN[0])
 
     def find(self, nid: int) -> Notification | None:
         return next((t.notification for t in self.toasts if t.notification.id == nid), None)
+
+    # -- geometry for the glass backdrop of each toast -----------------------------------
+    def blur(self):
+        return None if self.monitor is None else self.shell.wallpaper.blurred_surface(self.monitor)
+
+    def origin(self) -> tuple[int, int]:
+        geo = self.monitor.get_geometry()
+        w, h = self.window.get_allocated_width(), self.window.get_allocated_height()
+        x = geo.width - (12 - TOAST_MARGIN[1]) - w
+        if self.shell.panel_position() == "bottom":
+            return (x, geo.height - (self.shell.panel_thickness() + 10 - TOAST_MARGIN[2]) - h)
+        return (x, self.shell.panel_thickness() + 10 - TOAST_MARGIN[0])
 
     def show(self, n: Notification) -> None:
         self.remove(n)
         toast = Toast(self, n)
         wrapper = toast.button
         wrapper.add(toast)
+        # margins lie outside the Glass allocation: the blur clips to the rounded toast and the shadow has room
+        wrapper.set_margin_top(TOAST_MARGIN[0])
+        wrapper.set_margin_end(TOAST_MARGIN[1])
+        wrapper.set_margin_bottom(TOAST_MARGIN[2])
+        wrapper.set_margin_start(TOAST_MARGIN[3])
         self.toasts.append(toast)
         self.box.pack_start(wrapper, False, False, 0)
         while len(self.toasts) > MAX_TOASTS:
@@ -359,6 +385,7 @@ class ToastStack:
             mon = self.shell.current_monitor()
             if mon is not None:
                 GtkLayerShell.set_monitor(self.window, mon)
+                self.monitor = mon
         self.window.show_all()
 
     def _expire(self, n: Notification) -> bool:
@@ -395,10 +422,13 @@ class NotificationList(Gtk.Box):
         self._syncing = False
         self.dnd_switch.connect("state-set", self._on_dnd_switch)
         header.pack_end(self.dnd_switch, False, False, 0)
-        header.pack_end(icon_image("notifications-disabled-symbolic", 14), False, False, 0)
+        header.pack_end(label("Do Not Disturb", css=("subtitle",)), False, False, 0)
         self.pack_start(header, False, False, 0)
         self.rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.rows.set_vexpand(True)
         scrolled = Gtk.ScrolledWindow()
+        add_class(scrolled, "notif-list")
+        scrolled.set_vexpand(True)
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_propagate_natural_height(True)
         scrolled.set_max_content_height(420)
@@ -427,12 +457,14 @@ class NotificationList(Gtk.Box):
         for child in self.rows.get_children():
             self.rows.remove(child)
         if not svc.items:
-            self.rows.pack_start(label("No notifications", css=("empty-state",)), False, False, 0)
+            self.rows.pack_start(empty_state("No notifications"), True, True, 0)
         for n in svc.items:
             row = Gtk.Box(spacing=10)
             add_class(row, "notif-row")
             row.pack_start(n.icon_widget(24), False, False, 0)
             texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            if n.app_name and n.app_name != n.summary:
+                texts.pack_start(label(n.app_name, css=("notif-app",), xalign=0, ellipsize=True), False, False, 0)
             head = Gtk.Box(spacing=6)
             head.pack_start(label(n.summary or n.app_name, css=("toast-summary",), xalign=0, ellipsize=True), True, True, 0)
             head.pack_end(label(n.age_text(), css=("notif-time",)), False, False, 0)
@@ -448,7 +480,7 @@ class NotificationList(Gtk.Box):
                 body.set_max_width_chars(40)
                 texts.pack_start(body, False, False, 0)
             row.pack_start(texts, True, True, 0)
-            close = flat_button(icon_image("window-close-symbolic", 12), css=("toast-close",))
+            close = flat_button(icon_image("window-close-symbolic", 16), css=("toast-close",))
             close.set_valign(Gtk.Align.START)
             close.connect("clicked", lambda _b, item=n: svc.close(item, REASON_DISMISSED))
             row.pack_end(close, False, False, 0)
@@ -483,8 +515,9 @@ class NotificationCenter(OverlayWindow):
     def build(self) -> Gtk.Widget:
         glass = Glass(self.blur, self.origin, radius=20, orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
         add_class(glass, "card")
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        self.date_label = label("", css=("title",), xalign=0)
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.date_label = label("", css=("title", "date-title"), xalign=0)
+        self.date_label.set_valign(Gtk.Align.CENTER)
         left.pack_start(self.date_label, False, False, 0)
         self.calendar = Gtk.Calendar()
         self.calendar.set_property("show-week-numbers", False)

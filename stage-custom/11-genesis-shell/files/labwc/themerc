@@ -1,21 +1,21 @@
 # GenesisGlass theme for labwc: dark, rounded, steel-blue accent.
-# Installed as /usr/share/themes/GenesisGlass/labwc/themerc.
+# Installed by install.sh as /usr/share/themes/GenesisGlass/{labwc,openbox-3}/themerc with #4f8cff replaced by the accent.
 
 border.width: 1
-window.titlebar.padding.height: 5
+window.titlebar.padding.height: 7
 window.titlebar.padding.width: 8
 
-window.active.border.color: #22314a
+window.active.border.color: #2a3850
 window.inactive.border.color: #141d2a
-window.active.title.bg.color: #121c2b
-window.inactive.title.bg.color: #0e1621
+window.active.title.bg.color: #121a26
+window.inactive.title.bg.color: #0f1521
 window.active.label.text.color: #e9eff6
 window.inactive.label.text.color: #7f8da0
 window.label.text.justify: center
 
-window.button.width: 26
-window.button.height: 26
-window.button.spacing: 2
+window.button.width: 24
+window.button.height: 24
+window.button.spacing: 4
 window.button.hover.bg.corner-radius: 8
 window.active.button.unpressed.image.color: #e9eff6
 window.inactive.button.unpressed.image.color: #7f8da0

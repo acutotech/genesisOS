@@ -36,7 +36,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
     },
     "appearance": {
         "accent": "#4f8cff",
-        "glass_opacity": "0.72",
+        "glass_opacity": "0.62",
     },
     "notifications": {
         "timeout": "6",
@@ -44,7 +44,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
     },
     "launcher": {
         "columns": "7",
-        "icon_size": "56",
+        "icon_size": "64",
     },
     "idle": {
         "blank_timeout": "600",  # seconds, 0 disables

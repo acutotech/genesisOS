@@ -25,6 +25,7 @@ class DockButton(Gtk.Button):
         self.set_can_focus(False)
         add_class(self, "panel-button", "dock-button")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_valign(Gtk.Align.CENTER)
         self.image = gicon_image(entry.icon if entry else None, 24)
         self.indicator = Gtk.Box()
         add_class(self.indicator, "dock-indicator")
@@ -191,11 +192,14 @@ class Panel:
 
         # left: logo + dock
         left = Gtk.Box(spacing=2)
-        logo = flat_button(icon_image("genesis-os", 26), css=("panel-button", "logo-button"), tooltip="Applications  (Super)")
+        left.set_valign(Gtk.Align.CENTER)
+        logo = flat_button(icon_image("genesis-os", 24), css=("panel-button", "logo-button"), tooltip="Applications  (Super)")
         logo.connect("clicked", lambda _b: shell.toggle_launcher(monitor))
         left.pack_start(logo, False, False, 0)
         sep = Gtk.Box()
         add_class(sep, "panel-separator")
+        sep.set_valign(Gtk.Align.CENTER)
+        sep.set_size_request(1, 20)
         left.pack_start(sep, False, False, 0)
         self.dock = Dock(shell)
         left.pack_start(self.dock, False, False, 0)
@@ -204,24 +208,30 @@ class Panel:
         # center: clock
         self.clock_label = label("", css=("clock",))
         self.clock_button = flat_button(self.clock_label, css=("panel-button",), tooltip="Calendar and notifications")
+        self.clock_button.set_valign(Gtk.Align.CENTER)
         self.clock_button.connect("clicked", lambda _b: shell.toggle_notification_center(monitor))
         self.box.set_center_widget(self.clock_button)
 
         # right: status pill
         icons = Gtk.Box(spacing=2)
         self.badge = label("", css=("notification-badge",))
+        self.badge.set_valign(Gtk.Align.CENTER)
         self.badge.set_no_show_all(True)
         self.net_icon = icon_image("network-wireless-symbolic", 16)
+        self.net_icon.set_no_show_all(True)
         self.bt_icon = icon_image("bluetooth-active-symbolic", 16)
         self.bt_icon.set_no_show_all(True)
         self.vol_icon = icon_image("audio-volume-high-symbolic", 16)
         self.bat_icon = icon_image("battery-symbolic", 16)
         self.bat_icon.set_no_show_all(True)
-        for w in (self.badge, self.net_icon, self.bt_icon, self.vol_icon, self.bat_icon):
+        self.menu_icon = icon_image("open-menu-symbolic", 16)
+        self.menu_icon.set_no_show_all(True)
+        for w in (self.badge, self.net_icon, self.bt_icon, self.vol_icon, self.bat_icon, self.menu_icon):
             icons.pack_start(w, False, False, 0)
         self.status_button = flat_button(icons, css=("panel-button", "status-pill"), tooltip="Control center")
         self.status_button.connect("clicked", lambda _b: shell.toggle_control_center(monitor))
         right = Gtk.Box(spacing=2)
+        right.set_valign(Gtk.Align.CENTER)
         right.pack_end(self.status_button, False, False, 0)
         self.box.pack_end(right, False, False, 0)
 
@@ -257,6 +267,7 @@ class Panel:
 
     def update_status(self) -> None:
         s = self.shell
+        self.net_icon.set_visible(s.network.available)
         self.net_icon.set_from_icon_name(s.network.icon_name(), Gtk.IconSize.BUTTON)
         self.net_icon.set_pixel_size(16)
         self.net_icon.set_tooltip_text(s.network.status_text())
@@ -276,6 +287,8 @@ class Panel:
         unread = s.notifications.unread_count()
         self.badge.set_visible(unread > 0)
         self.badge.set_text(str(unread) if unread < 100 else "99+")
+        # never an empty pill: fall back to a menu glyph when no status icon is shown
+        self.menu_icon.set_visible(not any(w.get_visible() for w in (self.net_icon, self.bt_icon, self.vol_icon, self.bat_icon)))
 
     def refresh_dock(self) -> None:
         self.dock.refresh()

@@ -133,6 +133,9 @@ class Shell:
         for overlay in (self.launcher, self.control_center, self.notification_center, self.power):
             if overlay.visible:
                 overlay.window.queue_draw()
+        for win in (self.notifications.toasts.window, self.osd.window):
+            if win.get_visible():
+                win.queue_draw()
 
     def _on_config(self) -> None:
         self.theme.apply()

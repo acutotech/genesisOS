@@ -8,11 +8,9 @@ import socket
 from gi.repository import GLib, Gtk, GtkLayerShell
 
 from .util import add_class, flat_button, icon_button, icon_image, label, spawn, user_display_name, which
-from .widgets import Glass, ListRow, OverlayWindow, SliderRow, Tile, avatar_image, page_header
+from .widgets import CARD_WIDTH, Glass, ListRow, OverlayWindow, SliderRow, Tile, avatar_image, empty_state, page_header
 
 log = logging.getLogger("genesis.control")
-
-CARD_WIDTH = 384
 
 
 class ControlCenter(OverlayWindow):
@@ -64,10 +62,10 @@ class ControlCenter(OverlayWindow):
         who.pack_start(label(user_display_name(), css=("title",), xalign=0, ellipsize=True), False, False, 0)
         who.pack_start(label(socket.gethostname(), css=("subtitle",), xalign=0, ellipsize=True), False, False, 0)
         header.pack_start(who, True, True, 0)
-        for icon, tip, cb, extra in (
-            ("preferences-system-symbolic", "Settings", lambda: s.open_settings(), ()),
-            ("system-lock-screen-symbolic", "Lock screen", s.lock, ()),
+        for icon, tip, cb, extra in (  # pack_end reverses: Settings … Lock, Power with Power rightmost
             ("system-shutdown-symbolic", "Power", s.show_power, ("danger",)),
+            ("system-lock-screen-symbolic", "Lock screen", s.lock, ()),
+            ("preferences-system-symbolic", "Settings", lambda: s.open_settings(), ()),
         ):
             btn = icon_button(icon, 16, css=("round-button",) + extra, tooltip=tip)
             btn.connect("clicked", lambda _b, c=cb: (self.hide(), c()))
@@ -80,7 +78,7 @@ class ControlCenter(OverlayWindow):
         sink_box = Gtk.Box(spacing=6)
         self.sink_label = label("", css=("subtitle",), xalign=0, ellipsize=True, max_chars=34)
         sink_box.pack_start(self.sink_label, True, True, 0)
-        sink_box.pack_end(icon_image("go-next-symbolic", 12), False, False, 0)
+        sink_box.pack_end(icon_image("go-next-symbolic", 16), False, False, 0)
         self.sink_button.add(sink_box)
         self.sink_button.connect("clicked", lambda _b: self._show_page("audio"))
         self.sink_button.set_halign(Gtk.Align.FILL)
@@ -95,7 +93,10 @@ class ControlCenter(OverlayWindow):
         grid.set_column_homogeneous(True)
         self.wifi_tile = Tile("network-wireless-symbolic", "Wi-Fi", "", self._toggle_wifi, lambda: self._show_page("wifi"))
         self.bt_tile = Tile("bluetooth-active-symbolic", "Bluetooth", "", self._toggle_bluetooth, lambda: self._show_page("bluetooth"))
-        self.dnd_tile = Tile("notifications-disabled-symbolic", "Do Not Disturb", "", self._toggle_dnd)
+        theme = Gtk.IconTheme.get_default()
+        dnd_off = "preferences-system-notifications-symbolic" if theme.has_icon("preferences-system-notifications-symbolic") else "notifications-disabled-symbolic"
+        self._dnd_icons = (dnd_off, "notifications-disabled-symbolic")
+        self.dnd_tile = Tile(dnd_off, "Do Not Disturb", "", self._toggle_dnd)
         self.night_tile = Tile("weather-clear-night-symbolic", "Night Light", "", self._toggle_night)
         self.shot_tile = Tile("camera-photo-symbolic", "Screenshot", "Whole screen", lambda: (self.hide(), s.screenshot("screen")))
         self.display_tile = Tile("video-display-symbolic", "Displays", "Arrange screens", lambda: (self.hide(), spawn([s.config.get("shortcuts", "display_settings")])))
@@ -245,6 +246,7 @@ class ControlCenter(OverlayWindow):
 
         self.dnd_tile.set_active(s.notifications.dnd)
         self.dnd_tile.set_subtitle("On" if s.notifications.dnd else "Off")
+        self.dnd_tile.set_icon(self._dnd_icons[1] if s.notifications.dnd else self._dnd_icons[0])
         self.night_tile.set_active(self._night)
         self.night_tile.set_subtitle("On" if self._night else "Off")
 
@@ -268,11 +270,11 @@ class ControlCenter(OverlayWindow):
         self._clear(self.wifi_list)
         self._password_row = None
         if not net.wifi_enabled:
-            self.wifi_list.pack_start(label("Wi-Fi is off", css=("empty-state",)), False, False, 0)
+            self.wifi_list.pack_start(empty_state("Wi-Fi is off", "network-wireless-disabled-symbolic"), True, True, 0)
         else:
             aps = net.access_points()
             if not aps:
-                self.wifi_list.pack_start(label("Searching for networks…", css=("empty-state",)), False, False, 0)
+                self.wifi_list.pack_start(empty_state("Searching for networks…", "network-wireless-symbolic"), True, True, 0)
             for ap in aps:
                 trailing = icon_image("object-select-symbolic", 16) if ap["active"] else (icon_image("channel-secure-symbolic", 14) if ap["secure"] else None)
                 row = ListRow(net.strength_icon(ap["strength"]), ap["ssid"], "Connected" if ap["active"] else ("Saved" if ap["known"] else ("Secured" if ap["secure"] else "Open")), trailing)
@@ -336,9 +338,9 @@ class ControlCenter(OverlayWindow):
         self._sync_switch(self.bt_switch, bt.powered)
         self._clear(self.bt_list)
         if not bt.powered:
-            self.bt_list.pack_start(label("Bluetooth is off", css=("empty-state",)), False, False, 0)
+            self.bt_list.pack_start(empty_state("Bluetooth is off", "bluetooth-disabled-symbolic"), True, True, 0)
         elif not bt.devices:
-            self.bt_list.pack_start(label("No paired devices", css=("empty-state",)), False, False, 0)
+            self.bt_list.pack_start(empty_state("No paired devices", "bluetooth-active-symbolic"), True, True, 0)
         for dev in bt.devices:
             sub = "Connected" if dev["connected"] else "Paired"
             if dev.get("battery") is not None:
@@ -364,7 +366,7 @@ class ControlCenter(OverlayWindow):
         audio = self.shell.audio
         self._clear(self.audio_list)
         if not audio.sinks:
-            self.audio_list.pack_start(label("No output devices", css=("empty-state",)), False, False, 0)
+            self.audio_list.pack_start(empty_state("No output devices", "audio-speakers-symbolic"), True, True, 0)
         for name, desc in audio.sinks:
             current = name == audio.sink_name
             row = ListRow("audio-speakers-symbolic" if "hdmi" not in name.lower() else "video-display-symbolic", desc, "", icon_image("object-select-symbolic", 16) if current else None)

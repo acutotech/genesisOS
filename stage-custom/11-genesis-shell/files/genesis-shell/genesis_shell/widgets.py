@@ -12,6 +12,8 @@ from .util import ALL_EDGES, add_class, flat_button, icon_image, label, make_lay
 
 log = logging.getLogger("genesis.widgets")
 
+CARD_WIDTH = 384  # control center card and toasts share one width
+
 
 class Glass(Gtk.Box):
     """A box whose background is the blurred wallpaper under it, tinted by CSS.
@@ -195,23 +197,23 @@ class Tile(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         add_class(self, "tile")
         self.set_hexpand(True)
-        self.icon = icon_image(icon, 22)
+        self.icon = icon_image(icon, 24)
         self.title = label(title, css=("tile-title",), xalign=0, ellipsize=True)
         self.subtitle = label(subtitle, css=("subtitle",), xalign=0, ellipsize=True, max_chars=18)
-        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         texts.set_valign(Gtk.Align.CENTER)
         texts.pack_start(self.title, False, False, 0)
         texts.pack_start(self.subtitle, False, False, 0)
-        inner = Gtk.Box(spacing=10)
+        inner = Gtk.Box(spacing=12)
         inner.pack_start(self.icon, False, False, 0)
         inner.pack_start(texts, True, True, 0)
-        self.button = flat_button(inner)
+        self.button = flat_button(inner, css=("tile-button",))
         self.button.set_hexpand(True)
         if on_toggle is not None:
             self.button.connect("clicked", lambda _b: on_toggle())
         self.pack_start(self.button, True, True, 0)
         if on_details is not None:
-            chevron = flat_button(icon_image("go-next-symbolic", 14), css=("tile-chevron",))
+            chevron = flat_button(icon_image("go-next-symbolic", 16), css=("tile-chevron",))
             chevron.set_valign(Gtk.Align.CENTER)
             chevron.connect("clicked", lambda _b: on_details())
             self.pack_end(chevron, False, False, 0)
@@ -226,7 +228,7 @@ class Tile(Gtk.Box):
 
     def set_icon(self, name: str) -> None:
         self.icon.set_from_icon_name(name, Gtk.IconSize.BUTTON)
-        self.icon.set_pixel_size(22)
+        self.icon.set_pixel_size(24)
 
 
 class SliderRow(Gtk.Box):
@@ -235,7 +237,7 @@ class SliderRow(Gtk.Box):
     def __init__(self, icon: str, on_icon_clicked: Callable | None, on_value: Callable[[float], None]) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         add_class(self, "slider-row")
-        self.icon_button = flat_button(icon_image(icon, 18), css=("round-button",))
+        self.icon_button = flat_button(icon_image(icon, 20), css=("round-button",))
         if on_icon_clicked is not None:
             self.icon_button.connect("clicked", lambda _b: on_icon_clicked())
         self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
@@ -260,7 +262,7 @@ class SliderRow(Gtk.Box):
         if icon:
             img = self.icon_button.get_child()
             img.set_from_icon_name(icon, Gtk.IconSize.BUTTON)
-            img.set_pixel_size(18)
+            img.set_pixel_size(20)
 
     def _changed(self, scale) -> None:
         if self._updating:
@@ -310,6 +312,18 @@ def avatar_image(size: int = 40) -> Gtk.Image:
     img = icon_image("avatar-default-symbolic", size - 8)
     add_class(img, "avatar")
     return img
+
+
+def empty_state(text: str, icon: str = "notifications-disabled-symbolic") -> Gtk.Box:
+    """Centred placeholder for an empty list: a dim icon above a short message."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    box.set_valign(Gtk.Align.CENTER)
+    box.set_vexpand(True)
+    img = icon_image(icon, 28)
+    img.set_opacity(0.35)
+    box.pack_start(img, False, False, 0)
+    box.pack_start(label(text, css=("empty-state",)), False, False, 0)
+    return box
 
 
 def page_header(title: str, on_back: Callable, trailing: Gtk.Widget | None = None) -> Gtk.Box:

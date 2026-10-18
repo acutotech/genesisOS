@@ -15,7 +15,7 @@ show_seconds = false
 
 [appearance]
 accent = @ACCENT@
-glass_opacity = 0.72
+glass_opacity = 0.62
 
 [notifications]
 timeout = 6
@@ -23,7 +23,7 @@ do_not_disturb = false
 
 [launcher]
 columns = 7
-icon_size = 56
+icon_size = 64
 
 [idle]
 blank_timeout = @BLANK_TIMEOUT@
