@@ -132,8 +132,12 @@ one changed (a card swapped since the list was made); the disk your computer
 runs from is never offered, not even with *Show fixed disks*. It checks the
 settings the way the box will: a user name that is already a system account
 or group (`games`, `video`, ...), a Wi-Fi passphrase over 63 bytes, a
-country that is not an ISO code (`UK` is `GB`), a time zone your computer does
-not know, or "key logins only" without a key are refused before writing.
+country that is not an ISO code (`UK` is `GB`), a time zone written in the
+wrong letter case (`europe/london`) or in an area that does not exist, or "key
+logins only" without a key are refused before writing. A zone your computer
+does not know (its time zone data may be older than the box's) is passed on,
+and the box reports it in `genesis-setup-result.txt` if it does not know it
+either.
 
 * **Windows:** run `genesis-imager-windows-x64.exe`; it asks for administrator
   rights (needed to write a disk). SmartScreen may warn about an unsigned app:

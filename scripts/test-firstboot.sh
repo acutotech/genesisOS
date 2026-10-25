@@ -228,6 +228,29 @@ assert_no_grep '[wifi-security]' "${NM}"
 assert_no_grep 'hidden=' "${NM}"
 assert_grep '^user: nodoai, password set$' "${R}/boot/firmware/genesis-setup-result.txt"
 
+echo "Scenario 5b: fallback path keeps the build's autologin choice"
+for wanted in off on; do
+	make_root
+	rm "${R}/usr/lib/userconf-pi/userconf"
+	mkdir -p "${R}/etc/systemd/system/getty@tty1.service.d"
+	if [ "${wanted}" = on ]; then
+		printf '[Seat:*]\nautologin-user=nodoai\n' > "${R}/etc/lightdm/lightdm.conf"
+		printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin nodoai --noclear %%I $TERM\n' \
+			> "${R}/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+	else
+		printf '[Seat:*]\n#autologin-user=\n' > "${R}/etc/lightdm/lightdm.conf"
+	fi
+	imager_payload '{"user": "tester", "password_hash": "'"${HASH}"'", "wifi_ssid": ""}' > /dev/null
+	if run_firstboot; then ok "exits 0 (autologin ${wanted})"; else fail "failed (autologin ${wanted})"; fi
+	if [ "${wanted}" = on ]; then
+		assert_grep '^autologin-user=tester$' "${R}/etc/lightdm/lightdm.conf"
+		assert_grep 'agetty --autologin tester ' "${R}/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+	else
+		assert_grep '^#autologin-user=$' "${R}/etc/lightdm/lightdm.conf"
+		assert_no_grep 'autologin-user=tester' "${R}/etc/lightdm/lightdm.conf"
+	fi
+done
+
 # =========================================================================================
 echo "Scenario 6: the wizard is armed; the build's autologin choice (kept by rename-user) wins"
 for flag in absent present; do

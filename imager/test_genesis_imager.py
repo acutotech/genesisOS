@@ -243,13 +243,25 @@ class SetupAreaTest(unittest.TestCase):
         settings(wifi_country="GB", timezone="Europe/London", keyboard="gb").validate()
 
     @unittest.skipUnless(g._known_timezones(), "this computer has no time zone database")
-    def test_timezone_must_exist(self):
-        settings(timezone="America/Argentina/Buenos_Aires").validate()
-        settings(timezone="Etc/GMT+5").validate()
-        for tz in ("europe/london", "Asia/Bangalore", "Mars/Olympus"):
+    def test_timezone_with_a_tz_database(self):
+        for tz in ("America/Argentina/Buenos_Aires", "Etc/GMT+5", "UTC",
+                   "Asia/Bangalore"):      # unknown here, maybe newer than this computer's tz data: the box decides
             with self.subTest(tz=tz):
-                with self.assertRaises(g.ImagerError):
+                settings(timezone=tz).validate()
+        with self.assertRaisesRegex(g.ImagerError, "Europe/London"):
+            settings(timezone="europe/london").validate()       # wrong case: certain to fail on the box
+        with self.assertRaises(g.ImagerError):
+            settings(timezone="Mars/Olympus").validate()        # no such area
+
+    def test_timezone_without_a_tz_database(self):
+        with mock.patch.object(g, "_known_timezones", return_value=frozenset()):
+            for tz in ("Europe/London", "Etc/GMT+5", "UTC", "America/Port-au-Prince"):
+                with self.subTest(tz=tz):
                     settings(timezone=tz).validate()
+            for tz in ("europe/london", "asia/Kolkata", "Asia/kolkata"):
+                with self.subTest(tz=tz):
+                    with self.assertRaises(g.ImagerError):
+                        settings(timezone=tz).validate()
 
     def test_payload_size_limit(self):
         keys = [f"ssh-ed25519 {'A' * 400} key{i}" for i in range(30)]
@@ -448,6 +460,15 @@ class ImageTest(unittest.TestCase):
         with self.assertRaisesRegex(g.ImagerError, "already customised"):
             g.scan_image(out)
 
+    def test_zip_made_by_macos_finder(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("genesis-os.img.xz", lzma.compress(synthetic_image(), preset=0))
+            zf.writestr("__MACOSX/._genesis-os.img.xz", b"\0\5\x16\7 AppleDouble")
+        path = self.tmp / "finder.zip"
+        path.write_bytes(buf.getvalue())
+        self.assertEqual(len(g.scan_image(path).setup_offsets), 16)
+
     def test_zip_with_several_images_is_refused(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -457,6 +478,16 @@ class ImageTest(unittest.TestCase):
         path.write_bytes(buf.getvalue())
         with self.assertRaisesRegex(g.ImagerError, "several images"):
             g.scan_image(path)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_output_owned_by_someone_else_is_still_written(self):
+        src = self.write("o.img", synthetic_image())
+        out = self.tmp / "shared.img"
+        with mock.patch("os.fchmod", side_effect=PermissionError(1, "Operation not permitted")):
+            target = g.FileTarget(out)
+            res = g.write_image(src, target, settings())
+        self.assertTrue(res.verified)
+        self.assertFalse(target.private)
 
     @unittest.skipIf(os.name == "nt", "POSIX permissions")
     def test_output_file_is_private(self):
@@ -528,6 +559,44 @@ class ImageTest(unittest.TestCase):
         salt = fields["PASSWORD_HASH"].split("$")[3]
         self.assertEqual(g.sha512_crypt("account pw", salt, 100000), fields["PASSWORD_HASH"])
 
+    def test_cli_reads_secrets_as_utf8_without_a_bom(self):
+        pw = self.tmp / "pw.txt"
+        pw.write_bytes("\ufeffAccount Pw\r\n".encode("utf-8"))
+        psk = self.tmp / "psk.txt"
+        psk.write_bytes("Café-réseau-1\n".encode("utf-8"))
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            g.cli(["--image", "unused.img", "--print-payload", "--password-file", str(pw), "--wifi-password-file", str(psk)])
+        fields = parse_payload(out.getvalue().encode())
+        self.assertEqual(base64.b64decode(fields["WIFI_PSK_B64"]).decode(), "Café-réseau-1")
+        salt = fields["PASSWORD_HASH"].split("$")[3]
+        self.assertEqual(g.sha512_crypt("Account Pw", salt, 100000), fields["PASSWORD_HASH"])
+        stdin = io.TextIOWrapper(io.BytesIO("\ufeffpw-stdin\nCafé-stdin-1\n".encode("utf-8")), encoding="cp1252")
+        with mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            g.cli(["--image", "unused.img", "--print-payload", "--password-file", "-", "--wifi-password-file", "-"])
+        fields = parse_payload(out.getvalue().encode())
+        self.assertEqual(base64.b64decode(fields["WIFI_PSK_B64"]).decode(), "Café-stdin-1")
+
+    def test_cli_without_an_answer_says_so(self):
+        src = self.write("ask.img", synthetic_image())
+        dev = g.Device("/dev/fake", 10 ** 9, "Card", True, False)
+        with mock.patch.object(g, "list_devices", return_value=[dev]), mock.patch.object(g, "is_admin", return_value=True), \
+                mock.patch("builtins.input", side_effect=EOFError), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err, mock.patch("sys.stdout", new_callable=io.StringIO):
+            rc = g.cli(["--image", str(src), "--device", "/dev/fake", "--password", "pw1234", "--wifi-ssid", ""])
+        self.assertEqual(rc, 1)
+        self.assertIn("--yes", err.getvalue())
+        self.assertNotIn("damaged", err.getvalue())
+
+    def test_stale_helper_directories_are_removed(self):
+        old = Path(tempfile.mkdtemp(prefix="genesis-imager-"))
+        new = Path(tempfile.mkdtemp(prefix="genesis-imager-"))
+        (old / "job.json").write_text("{}")
+        os.utime(old, (0, 0))
+        g.remove_stale_workdirs()
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
+        shutil.rmtree(new)
+
     def test_cli_reports_a_damaged_archive(self):
         good = lzma.compress(synthetic_image(), preset=0)
         bad = self.tmp / "bad.img.xz"
@@ -585,6 +654,35 @@ class LinuxDeviceTargetTest(unittest.TestCase):
         with self.assertRaisesRegex(g.ImagerError, "Cancelled"):
             g.write_image(self.src, g.DeviceTarget(self.dev), settings(), cancel=cancel, progress=stop_mid_write)
         self.assertNotEqual(self.card.read_bytes()[510:512], b"\x55\xaa")
+
+    def test_cancel_while_the_disk_is_checked_again_saves_it(self):
+        cancel = threading.Event()
+        before = self.card.read_bytes()
+
+        def listing(show_all=False):
+            cancel.set()                    # the user clicks Cancel while the disks are listed again
+            return [self.dev]
+
+        with mock.patch.object(g, "list_devices", side_effect=listing):
+            with self.assertRaisesRegex(g.ImagerError, "Nothing was written"):
+                g.write_image(self.src, g.DeviceTarget(self.dev), settings(), cancel=cancel)
+        self.assertEqual(self.card.read_bytes(), before)
+
+    def test_helper_sees_a_cancel_between_progress_reports(self):
+        progress = self.tmp / "progress.jsonl"
+        job = {"image": str(self.src), "device": g.asdict(self.dev), "verify": True,
+               "settings": {**g.asdict(settings()), "password": "", "password_hash": g.sha512_crypt("pw1234")}}
+        before = self.card.read_bytes()
+
+        def listing(show_all=False):
+            (self.tmp / "cancel").touch()   # the window drops the cancel file
+            return [self.dev]
+
+        with mock.patch.object(g, "list_devices", side_effect=listing), mock.patch("sys.stdin", io.StringIO(json.dumps(job))):
+            rc = g.worker_main("-", str(progress))
+        self.assertEqual(rc, 1)
+        self.assertIn("Nothing was written", progress.read_text())
+        self.assertEqual(self.card.read_bytes(), before)
 
     def test_a_swapped_disk_is_not_written(self):
         other = g.Device(self.dev.path, self.dev.size, "Backup HDD", False, False, serial="OTHER")

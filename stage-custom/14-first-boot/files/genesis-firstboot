@@ -158,7 +158,9 @@ apply_user() {
 		fi
 		usermod -s /bin/bash "${new}"
 		printf '%s:%s\n' "${new}" "${hash}" | chpasswd -e || { note "user: setting the password failed"; return 1; }
-		sed -i "s/^#\?autologin-user=.*/autologin-user=${new}/" "${R}/etc/lightdm/lightdm.conf" 2> /dev/null || true
+		# follow an existing autologin only: a commented-out line (DESKTOP_AUTOLOGIN=0) stays off
+		sed -i "s/^autologin-user=.*/autologin-user=${new}/" "${R}/etc/lightdm/lightdm.conf" 2> /dev/null || true
+		sed -i "s/--autologin ${first} /--autologin ${new} /" "${R}/etc/systemd/system/getty@tty1.service.d/autologin.conf" 2> /dev/null || true
 	fi
 	if [ -n "${nopasswd}" ] && [ "${new}" != "${first}" ]; then
 		tmp="$(mktemp)"

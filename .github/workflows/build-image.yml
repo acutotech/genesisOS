@@ -138,8 +138,6 @@ jobs:
         include:
           - {os: windows-latest, name: windows-x64}
           - {os: macos-latest, name: macos-arm64}
-          # the oldest supported runner: the app needs the build machine's glibc (2.35) or newer
-          - {os: ubuntu-22.04, name: linux-x86_64}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -153,7 +151,8 @@ jobs:
           TARGET: ${{ matrix.name }}
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check -q pyinstaller==6.22.2 pillow==12.2.0
+          # tzdata: Windows has no time zone database; bundled, the app can check zone names there too
+          python -m pip install --disable-pip-version-check -q pyinstaller==6.22.2 pillow==12.2.0 tzdata==2026.4
           icons=stage-custom/10-branding/files/icons/hicolor
           mkdir -p imager-build out
           cp "$icons/64x64/apps/genesis-os.png" imager-build/genesis-os.png
@@ -164,7 +163,7 @@ jobs:
           [ "${RUNNER_OS}" = Windows ] && sep=';'
           common=(--noconfirm --clean --windowed --distpath imager-build/dist --workpath imager-build/work
                   --specpath imager-build --icon "$root/$icons/256x256/apps/genesis-os.png"
-                  --add-data "$root/imager-build/genesis-os.png${sep}.")
+                  --add-data "$root/imager-build/genesis-os.png${sep}." --collect-data tzdata)
           case "${RUNNER_OS}" in
             Windows)
               # --uac-admin: Windows asks for administrator rights when the app starts
@@ -179,11 +178,6 @@ jobs:
               "imager-build/dist/Genesis Imager.app/Contents/MacOS/Genesis Imager" --write-placeholder out/placeholder.txt
               ditto -c -k --keepParent "imager-build/dist/Genesis Imager.app" "out/genesis-imager-${TARGET}.zip"
               ;;
-            Linux)
-              python -m PyInstaller "${common[@]}" --onefile --name genesis-imager imager/genesis_imager.py
-              imager-build/dist/genesis-imager --write-placeholder out/placeholder.txt
-              cp imager-build/dist/genesis-imager "out/genesis-imager-${TARGET}"
-              ;;
           esac
           # the app runs and produces the setup area the image carries
           cmp out/placeholder.txt stage-custom/14-first-boot/files/genesis-setup.txt
@@ -193,6 +187,48 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: genesis-imager-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+
+  imager-build-linux:
+    name: Genesis Imager app (linux-x86_64)
+    needs: imager-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Built inside Ubuntu 22.04 so the app runs on glibc 2.35 and newer (Ubuntu 22.04,
+    # Debian 12 and later), whatever runner image hosts the job.
+    container:
+      image: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3 python3-venv python3-tk binutils ca-certificates
+          python3 -m venv /opt/build
+          /opt/build/bin/pip install --disable-pip-version-check -q pyinstaller==6.22.2 pillow==12.2.0
+          icons=stage-custom/10-branding/files/icons/hicolor
+          mkdir -p imager-build out
+          cp "$icons/64x64/apps/genesis-os.png" imager-build/genesis-os.png
+          /opt/build/bin/python -m PyInstaller --noconfirm --clean --windowed --onefile --name genesis-imager \
+            --distpath imager-build/dist --workpath imager-build/work --specpath imager-build \
+            --icon "$PWD/$icons/256x256/apps/genesis-os.png" --add-data "$PWD/imager-build/genesis-os.png:." \
+            imager/genesis_imager.py
+          imager-build/dist/genesis-imager --write-placeholder out/placeholder.txt
+          cmp out/placeholder.txt stage-custom/14-first-boot/files/genesis-setup.txt
+          rm out/placeholder.txt
+          cp imager-build/dist/genesis-imager out/genesis-imager-linux-x86_64
+          ldd --version | head -1
+          ls -l out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-imager-linux-x86_64
           path: out/
           if-no-files-found: error
           retention-days: 30
@@ -418,7 +454,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: [build, imager-build]
+    needs: [build, imager-build, imager-build-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 30

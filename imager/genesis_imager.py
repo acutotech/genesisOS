@@ -114,6 +114,10 @@ class ImagerError(Exception):
     """A problem to show to the user as is."""
 
 
+# what a damaged .xz, .gz or .zip raises while it is read
+STREAM_ERRORS = (lzma.LZMAError, EOFError, zlib.error, zipfile.BadZipFile, gzip.BadGzipFile)
+
+
 # ======================================================================== password hash
 _ITOA64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _SHA512_ORDER = [(0, 21, 42), (22, 43, 1), (44, 2, 23), (3, 24, 45), (25, 46, 4), (47, 5, 26), (6, 27, 48),
@@ -190,6 +194,34 @@ def _known_timezones() -> frozenset:
     return _TZ_CACHE[0]
 
 
+def timezone_problem(tz: str) -> str:
+    """Why `tz` cannot be a time zone on the box, or "".
+
+    The box checks the name against its own tz database at first boot. Here only
+    mistakes that are certain are refused: a wrong shape, wrong letter case (the
+    box's file system is case-sensitive) and an unknown area. A zone this computer
+    does not know may still be newer than its tz data, so it is let through.
+    """
+    if not TZ_RE.match(tz):
+        return f"'{tz}' is not a time zone name such as Asia/Kolkata."
+    known = _known_timezones()
+    if known:
+        if tz in known:
+            return ""
+        same = [z for z in known if z.lower() == tz.lower()]
+        if same:
+            return f"'{tz}' is written {same[0]} (letter case matters)."
+        areas = {z.split("/", 1)[0] for z in known}
+        if "/" in tz and tz.split("/", 1)[0] not in areas:
+            return f"'{tz}' is not a time zone name such as Asia/Kolkata."
+        return ""
+    # no tz database here (a Windows Python without the tzdata package): every IANA
+    # name part starts with a capital letter (Europe/London, Etc/GMT+5, UTC)
+    if any(not part[:1].isupper() for part in tz.split("/")):
+        return f"'{tz}' is not written like a time zone name (Europe/London, Asia/Kolkata; letter case matters)."
+    return ""
+
+
 @dataclass
 class Settings:
     user: str = DEFAULTS["user"]
@@ -232,9 +264,9 @@ class Settings:
             hint = " (the United Kingdom is GB)" if self.wifi_country == "UK" else ""
             problems.append(f"Wi-Fi country: '{self.wifi_country}' is not a two-letter ISO country code{hint}.")
         if self.timezone:
-            known = _known_timezones()
-            if not TZ_RE.match(self.timezone) or (known and self.timezone not in known):
-                problems.append(f"Time zone: '{self.timezone}' is not a time zone name such as Asia/Kolkata (letter case matters).")
+            tz_problem = timezone_problem(self.timezone)
+            if tz_problem:
+                problems.append(f"Time zone: {tz_problem}")
         if self.keyboard and not KB_RE.match(self.keyboard):
             problems.append("Keyboard: a layout code such as us, gb or in.")
         elif self.keyboard in LAYOUT_HINTS:
@@ -307,7 +339,9 @@ def _open_raw(path: Path) -> BinaryIO:
     name = path.name.lower()
     if name.endswith(".zip"):
         zf = zipfile.ZipFile(path)
-        members = [m for m in zf.namelist() if re.search(r"\.img(\.xz|\.gz)?$", m.lower())]
+        # macOS Finder adds __MACOSX/._<name> resource-fork entries to every zip it makes
+        members = [m for m in zf.namelist() if re.search(r"\.img(\.xz|\.gz)?$", m.lower())
+                   and not m.startswith("__MACOSX/") and not m.rsplit("/", 1)[-1].startswith("._")]
         if not members:
             raise ImagerError(f"{path.name} contains no .img, .img.xz or .img.gz file")
         if len(members) > 1:
@@ -365,6 +399,18 @@ def parse_mbr(sector0: bytes) -> list:
 def scan_image(path: Path, progress: Optional[Callable[[str, float], None]] = None,
                cancel: Optional[threading.Event] = None) -> ImageLayout:
     """First pass: read the partition table and find the setup area in the boot partition."""
+    try:
+        return _scan_image(path, progress, cancel)
+    except STREAM_ERRORS as exc:
+        raise damaged(exc) from exc
+
+
+def damaged(exc: BaseException) -> "ImagerError":
+    return ImagerError(f"The image file is damaged or incomplete ({type(exc).__name__}: {exc}). Copy or download it again.")
+
+
+def _scan_image(path: Path, progress: Optional[Callable[[str, float], None]],
+                cancel: Optional[threading.Event]) -> ImageLayout:
     customised = False
     with _open_raw(path) as raw:
         sector0 = _read_exact(raw, SECTOR)
@@ -419,6 +465,7 @@ class Target:
 
     name = ""
 
+    def prepare(self) -> None: ...      # checks and unmounts; never changes the target
     def open(self) -> None: ...
     def write_at(self, offset: int, data: bytes) -> None: ...
     def read_at(self, offset: int, size: int) -> bytes: ...
@@ -438,8 +485,12 @@ class FileTarget(Target):
         # private: a customised image holds the Wi-Fi passphrase and the password hash
         flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
         self.fd = os.open(self.path, flags, 0o600)
+        self.private = True
         if hasattr(os, "fchmod") and os.name != "nt":
-            os.fchmod(self.fd, 0o600)   # O_TRUNC keeps an existing file's mode
+            try:
+                os.fchmod(self.fd, 0o600)   # O_TRUNC keeps an existing file's mode
+            except OSError:
+                self.private = False        # another user's file we may write but not chmod
 
     def write_at(self, offset: int, data: bytes) -> None:
         os.lseek(self.fd, offset, os.SEEK_SET)
@@ -491,15 +542,21 @@ class DeviceTarget(FileTarget):
         self.path = Path(device.path)
         self.write_path = device.path
 
-    def open(self) -> None:
+    def prepare(self) -> None:
+        """Everything that takes time but destroys nothing: a Cancel after this still saves the disk."""
         revalidate(self.device)
         system = platform.system()
         if system == "Linux":
             for mnt in _linux_mountpoints(self.device.path):
                 subprocess.run(["umount", mnt], check=False, capture_output=True)
-            self.fd = os.open(self.device.path, os.O_RDWR | os.O_EXCL | getattr(os, "O_SYNC", 0))
         elif system == "Darwin":
             subprocess.run(["diskutil", "unmountDisk", "force", self.device.path], check=False, capture_output=True)
+
+    def open(self) -> None:
+        system = platform.system()
+        if system == "Linux":
+            self.fd = os.open(self.device.path, os.O_RDWR | os.O_EXCL | getattr(os, "O_SYNC", 0))
+        elif system == "Darwin":
             self.write_path = self.device.path.replace("/dev/disk", "/dev/rdisk")
             self.fd = os.open(self.write_path, os.O_RDWR)
         elif system == "Windows":
@@ -727,6 +784,8 @@ def write_image(image: Path, target: Target, settings: Settings, *, verify: bool
     held = b""
     written = 0
     verified = False
+    report("Preparing the card", 0.0)
+    target.prepare()
     if cancel is not None and cancel.is_set():
         raise ImagerError("Cancelled. Nothing was written.")
     target.open()
@@ -787,6 +846,8 @@ def write_image(image: Path, target: Target, settings: Settings, *, verify: bool
             if verify and target.read_at(0, len(held)) != held:
                 raise ImagerError("Verification failed at the start of the card. Try another card.")
         verified = verify
+    except STREAM_ERRORS as exc:
+        raise damaged(exc) from exc
     finally:
         target.close()
     target.finish()
@@ -883,8 +944,21 @@ def _self_command() -> list:
     return [sys.executable, os.path.abspath(__file__)]
 
 
+def remove_stale_workdirs(max_age: float = 3600.0) -> None:
+    """Remove helper directories a killed or force-quit window left behind (they may hold a job file)."""
+    now = time.time()
+    for d in Path(tempfile.gettempdir()).glob("genesis-imager-*"):
+        try:
+            st = d.stat()
+            if d.is_dir() and now - st.st_mtime > max_age and (os.name == "nt" or st.st_uid == os.getuid()):
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def run_privileged_worker(job: dict, on_progress: Callable[[str, float], None], cancel: threading.Event) -> dict:
     """Run the write as administrator in a helper process; progress comes back through a file."""
+    remove_stale_workdirs()
     system = platform.system()
     if system == "Linux" and not shutil.which("pkexec"):
         raise ImagerError("Writing needs administrator rights: run Genesis Imager with sudo.")
@@ -957,14 +1031,21 @@ def worker_main(job_path: str, progress_path: str) -> int:
     else:
         job = json.loads(Path(job_path).read_text())
         Path(job_path).unlink(missing_ok=True)   # holds the Wi-Fi password and hash: gone as soon as read
-    cancel = threading.Event()
     cancel_file = Path(progress_path).parent / "cancel"
+
+    class FileCancel(threading.Event):
+        """Set as soon as the window drops the cancel file, not only at the next progress report."""
+
+        def is_set(self) -> bool:
+            if not super().is_set() and cancel_file.exists():
+                self.set()
+            return super().is_set()
+
+    cancel = FileCancel()
 
     def emit(obj: dict) -> None:
         with open(progress_path, "a") as fh:
             fh.write(json.dumps(obj) + "\n")
-        if cancel_file.exists():
-            cancel.set()
 
     try:
         settings = Settings(**job["settings"])
@@ -1011,8 +1092,6 @@ def save_remembered(settings: Settings) -> None:
 
 
 # ======================================================================== command line
-# what a damaged .xz, .gz or .zip raises while it is read
-STREAM_ERRORS = (lzma.LZMAError, EOFError, zlib.error, zipfile.BadZipFile, gzip.BadGzipFile)
 
 
 def check_output_path(out: Path, image: Path) -> None:
@@ -1082,21 +1161,30 @@ def cli(argv: list) -> int:
         p.error("give --device or --output")
 
     def read_secret(source: str) -> str:
-        text = sys.stdin.readline() if source == "-" else Path(source).read_text().split("\n", 1)[0]
-        return text.rstrip("\r\n")
+        # always UTF-8 (the box's encoding), and without the BOM Windows editors put in front
+        if source == "-":
+            raw = getattr(sys.stdin, "buffer", None)
+            text = raw.readline().decode("utf-8-sig") if raw is not None else sys.stdin.readline()
+        else:
+            text = Path(source).read_text(encoding="utf-8-sig").split("\n", 1)[0]
+        return text.lstrip("\ufeff").rstrip("\r\n")
 
-    if args.password_file:
-        password = read_secret(args.password_file)
-    elif args.password is not None:
-        password = args.password
-    else:
-        password = getpass.getpass(f"Password for {args.user}: ")
-        if getpass.getpass("Again: ") != password:
-            print("The passwords differ.", file=sys.stderr)
-            return 2
-    wifi_password = read_secret(args.wifi_password_file) if args.wifi_password_file else args.wifi_password
-    if args.wifi_ssid and wifi_password is None:
-        wifi_password = getpass.getpass(f"Wi-Fi password for {args.wifi_ssid} (empty for an open network): ")
+    try:
+        if args.password_file:
+            password = read_secret(args.password_file)
+        elif args.password is not None:
+            password = args.password
+        else:
+            password = getpass.getpass(f"Password for {args.user}: ")
+            if getpass.getpass("Again: ") != password:
+                print("The passwords differ.", file=sys.stderr)
+                return 2
+        wifi_password = read_secret(args.wifi_password_file) if args.wifi_password_file else args.wifi_password
+        if args.wifi_ssid and wifi_password is None:
+            wifi_password = getpass.getpass(f"Wi-Fi password for {args.wifi_ssid} (empty for an open network): ")
+    except EOFError:
+        print("Error: no password on standard input (use --password-file or --wifi-password-file).", file=sys.stderr)
+        return 1
     keys = []
     for kf in args.ssh_key_file:
         keys += [line.strip() for line in Path(kf).read_text().splitlines() if line.strip() and not line.startswith("#")]
@@ -1146,14 +1234,15 @@ def cli(argv: list) -> int:
         print(f"First boot: user {settings.user}, host {settings.hostname or '(unchanged)'}"
               + (f", Wi-Fi {settings.wifi_ssid}" if settings.wifi_ssid else "") + ".")
         if args.output:
-            print(f"{args.output} holds the Wi-Fi password and the password hash: it is readable only by you; "
-                  "delete it once the card is written.")
+            who = "it is readable only by you" if getattr(target, "private", False) else \
+                "it could NOT be made private (another user's file), so others may read it"
+            print(f"{args.output} holds the Wi-Fi password and the password hash: {who}; delete it once the card is written.")
         return 0
     except ImagerError as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         return 1
-    except STREAM_ERRORS as exc:
-        print(f"\nError: the image file is damaged or incomplete ({type(exc).__name__}: {exc}).", file=sys.stderr)
+    except EOFError:
+        print("\nError: no answer on standard input (to write without being asked, add --yes).", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
@@ -1476,6 +1565,8 @@ def gui() -> int:  # noqa: C901 - one screen, built in one place
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+    if platform.system() == "Darwin":
+        root.createcommand("::tk::mac::Quit", on_close)   # Cmd-Q and the Dock's Quit skip WM_DELETE_WINDOW
     refresh_devices()
     root.mainloop()
     return 0
