@@ -25,6 +25,7 @@ Windows' administrator prompt).
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import getpass
 import hashlib
@@ -37,6 +38,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -46,6 +48,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import BinaryIO, Callable, Optional
@@ -79,6 +82,26 @@ TIMEZONES = ["Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "Asia
              "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
              "America/Sao_Paulo", "Africa/Johannesburg", "UTC"]
 KEYBOARDS = ["us", "gb", "in", "de", "fr", "es", "it", "jp", "pt", "br", "ch", "se", "no", "dk", "fi", "ara"]
+# ISO 3166-1 alpha-2, as /usr/share/zoneinfo/iso3166.tab (raspi-config's Wi-Fi country check) lists them
+ISO_COUNTRIES = frozenset("""
+AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY
+BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK
+FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR
+IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK
+ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM
+PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF
+TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW
+""".split())
+# Names Raspberry Pi OS already uses for system accounts or groups: the first boot cannot rename to them.
+RESERVED_NAMES = frozenset("""
+root daemon bin sys sync games man lp mail news uucp proxy www-data backup list irc gnats nobody nogroup
+systemd-network systemd-resolve systemd-timesync systemd-journal systemd-coredump messagebus sshd avahi lightdm
+polkitd rtkit pulse colord saned dnsmasq tss geoclue usbmux uuidd tcpdump _apt statd nm-openvpn sddm
+rpi-first-boot-wizard adm tty disk kmem dialout fax voice cdrom floppy tape sudo audio dip operator src shadow
+utmp video sasl plugdev staff users input sgx kvm render netdev gpio i2c spi lpadmin bluetooth ssl-cert crontab
+pipewire scanner docker
+""".split())
+LAYOUT_HINTS = {"uk": "gb", "en": "us", "usa": "us", "jpn": "jp", "ger": "de"}
 
 USER_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -152,6 +175,21 @@ def sha512_crypt(password: str, salt: Optional[str] = None, rounds: int = 100000
 
 
 # ======================================================================== settings
+_TZ_CACHE: list = []
+
+
+def _known_timezones() -> frozenset:
+    """Time zone names this computer knows (empty when it has no tz database, as on most Windows PCs)."""
+    if not _TZ_CACHE:
+        try:
+            import zoneinfo
+            names = zoneinfo.available_timezones()
+        except Exception:  # noqa: BLE001 - no zoneinfo or no tz data: check the shape only
+            names = set()
+        _TZ_CACHE.append(frozenset(names))
+    return _TZ_CACHE[0]
+
+
 @dataclass
 class Settings:
     user: str = DEFAULTS["user"]
@@ -171,8 +209,10 @@ class Settings:
 
     def validate(self) -> None:
         problems = []
-        if not USER_RE.match(self.user) or self.user == "root":
+        if not USER_RE.match(self.user):
             problems.append("User name: lower-case letters, digits and '-', starting with a letter, at most 32 characters.")
+        elif self.user in RESERVED_NAMES:
+            problems.append(f"User name: '{self.user}' is a system account or group name; choose another.")
         if not (self.password or self.password_hash):
             problems.append("Password: required (the image has none; this is the only way in).")
         if self.password and len(self.password) < 4:
@@ -182,20 +222,31 @@ class Settings:
         if self.wifi_ssid:
             if len(self.wifi_ssid.encode("utf-8")) > 32:
                 problems.append("Wi-Fi name: at most 32 bytes.")
-            if self.wifi_password and not (8 <= len(self.wifi_password) <= 63 or re.fullmatch(r"[0-9a-fA-F]{64}", self.wifi_password)):
-                problems.append("Wi-Fi password: 8 to 63 characters (leave it empty for an open network).")
-        if self.wifi_country and not re.fullmatch(r"[A-Z]{2}", self.wifi_country):
-            problems.append("Wi-Fi country: a two-letter code such as IN.")
-        if self.timezone and not TZ_RE.match(self.timezone):
-            problems.append("Time zone: an Area/City name such as Asia/Kolkata.")
+            psk = self.wifi_password
+            # NetworkManager counts bytes: 8 to 63 of them, or exactly 64 hex digits (a raw key)
+            if psk and (any(c in psk for c in "\r\n\0") or not (8 <= len(psk.encode("utf-8")) <= 63 or re.fullmatch(r"[0-9a-fA-F]{64}", psk))):
+                problems.append("Wi-Fi password: 8 to 63 bytes (accented letters count twice), or leave it empty for an open network.")
+            if any(c in self.wifi_ssid for c in "\r\n\0"):
+                problems.append("Wi-Fi name: no line breaks.")
+        if self.wifi_country and self.wifi_country not in ISO_COUNTRIES:
+            hint = " (the United Kingdom is GB)" if self.wifi_country == "UK" else ""
+            problems.append(f"Wi-Fi country: '{self.wifi_country}' is not a two-letter ISO country code{hint}.")
+        if self.timezone:
+            known = _known_timezones()
+            if not TZ_RE.match(self.timezone) or (known and self.timezone not in known):
+                problems.append(f"Time zone: '{self.timezone}' is not a time zone name such as Asia/Kolkata (letter case matters).")
         if self.keyboard and not KB_RE.match(self.keyboard):
             problems.append("Keyboard: a layout code such as us, gb or in.")
+        elif self.keyboard in LAYOUT_HINTS:
+            problems.append(f"Keyboard: the layout code for '{self.keyboard}' is '{LAYOUT_HINTS[self.keyboard]}'.")
         if self.keyboard_variant and not re.fullmatch(r"[a-z0-9_-]{1,24}", self.keyboard_variant):
             problems.append("Keyboard variant: letters, digits, '_' or '-'.")
         for key in self.ssh_keys:
             if not SSH_KEY_RE.match(key):
                 problems.append("SSH key: each line must be a public key (ssh-ed25519 AAAA..., ssh-rsa AAAA...).")
                 break
+        if self.ssh and not self.ssh_password_auth and not self.ssh_keys:
+            problems.append("Key logins only: add at least one SSH public key, or untick it.")
         if problems:
             raise ImagerError("\n".join(problems))
 
@@ -259,7 +310,9 @@ def _open_raw(path: Path) -> BinaryIO:
         members = [m for m in zf.namelist() if re.search(r"\.img(\.xz|\.gz)?$", m.lower())]
         if not members:
             raise ImagerError(f"{path.name} contains no .img, .img.xz or .img.gz file")
-        inner = zf.open(sorted(members, key=len)[0])
+        if len(members) > 1:
+            raise ImagerError(f"{path.name} contains several images ({', '.join(members)}); unzip it and choose one.")
+        inner = zf.open(members[0])
         member = members[0].lower()
         if member.endswith(".xz"):
             return lzma.open(inner)
@@ -309,8 +362,10 @@ def parse_mbr(sector0: bytes) -> list:
     return parts
 
 
-def scan_image(path: Path, progress: Optional[Callable[[str, float], None]] = None) -> ImageLayout:
+def scan_image(path: Path, progress: Optional[Callable[[str, float], None]] = None,
+               cancel: Optional[threading.Event] = None) -> ImageLayout:
     """First pass: read the partition table and find the setup area in the boot partition."""
+    customised = False
     with _open_raw(path) as raw:
         sector0 = _read_exact(raw, SECTOR)
         parts = parse_mbr(sector0)
@@ -322,12 +377,18 @@ def scan_image(path: Path, progress: Optional[Callable[[str, float], None]] = No
         found: dict = {}
         pos = SECTOR
         while pos < boot_end:
+            if cancel is not None and cancel.is_set():
+                raise ImagerError("Cancelled. Nothing was written.")
             chunk = _read_exact(raw, min(CHUNK, boot_end - pos))
             if not chunk:
                 break
             if pos + len(chunk) > boot_start:
                 first = max(0, boot_start - pos)
                 first += (-(pos + first)) % SECTOR
+                at = chunk.find(b"GENESIS_SETUP=1\n", first)
+                while at != -1 and not customised:
+                    customised = (pos + at) % SECTOR == 0
+                    at = chunk.find(b"GENESIS_SETUP=1\n", at + 1)
                 idx = chunk.find(SETUP_MAGIC, first)
                 while idx != -1:
                     if (pos + idx) % SECTOR == 0:
@@ -343,6 +404,9 @@ def scan_image(path: Path, progress: Optional[Callable[[str, float], None]] = No
                 progress("Checking the image", min(1.0, pos / boot_end))
     missing = [n for n in range(1, SETUP_PARTS + 1) if n not in found]
     if missing:
+        if not found and customised:
+            raise ImagerError("This image was already customised by Genesis Imager (its settings are filled in). Choose the "
+                              "original Genesis OS image to change them, or write this file with any image writer.")
         if not found:
             raise ImagerError("This image has no Genesis setup area: it is not a Genesis OS image, or one built before Genesis Imager existed.")
         raise ImagerError(f"The setup area in this image is incomplete (missing blocks {missing}).")
@@ -359,6 +423,7 @@ class Target:
     def write_at(self, offset: int, data: bytes) -> None: ...
     def read_at(self, offset: int, size: int) -> bytes: ...
     def flush(self) -> None: ...
+    def drop_cache(self) -> None: ...   # make the next reads come from the medium, not from RAM
     def close(self) -> None: ...
     def finish(self) -> None: ...
 
@@ -370,8 +435,11 @@ class FileTarget(Target):
         self.fd = -1
 
     def open(self) -> None:
+        # private: a customised image holds the Wi-Fi passphrase and the password hash
         flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
-        self.fd = os.open(self.path, flags, 0o644)
+        self.fd = os.open(self.path, flags, 0o600)
+        if hasattr(os, "fchmod") and os.name != "nt":
+            os.fchmod(self.fd, 0o600)   # O_TRUNC keeps an existing file's mode
 
     def write_at(self, offset: int, data: bytes) -> None:
         os.lseek(self.fd, offset, os.SEEK_SET)
@@ -407,6 +475,7 @@ class Device:
     removable: bool
     system: bool         # holds the running system: never offered
     ident: str = ""      # disk number on Windows, diskN on macOS
+    serial: str = ""     # hardware serial where the OS reports one: tells a swapped disk apart
 
     def label(self) -> str:
         return f"{self.description}  ({human(self.size)})  {self.path}"
@@ -423,6 +492,7 @@ class DeviceTarget(FileTarget):
         self.write_path = device.path
 
     def open(self) -> None:
+        revalidate(self.device)
         system = platform.system()
         if system == "Linux":
             for mnt in _linux_mountpoints(self.device.path):
@@ -446,12 +516,34 @@ class DeviceTarget(FileTarget):
             self.fd = os.open(self.device.path, os.O_RDWR | getattr(os, "O_BINARY", 0))
         else:
             raise ImagerError(f"Writing to devices is not supported on {system}")
+        if system in ("Linux", "Darwin"):
+            # what diskpart clean does on Windows: no partition table until the very end, so a
+            # cancelled or failed write leaves a card that no computer or Pi mistakes for a good one
+            self.write_at(0, b"\0" * HOLD_BACK)
+            self.flush()
 
     def flush(self) -> None:
         try:
             os.fsync(self.fd)
         except OSError:
             pass  # some raw devices refuse fsync; their writes are unbuffered
+
+    def drop_cache(self) -> None:
+        # Linux reads a block device through the page cache; without this the read-back
+        # would compare RAM with RAM. macOS (rdisk) and Windows (PhysicalDrive) read the medium.
+        if platform.system() != "Linux":
+            return
+        self.flush()
+        try:
+            import fcntl
+            fcntl.ioctl(self.fd, 0x1261)   # BLKFLSBUF
+        except (ImportError, OSError):
+            pass
+        if hasattr(os, "posix_fadvise"):
+            try:
+                os.posix_fadvise(self.fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            except OSError:
+                pass
 
     def finish(self) -> None:
         system = platform.system()
@@ -489,12 +581,48 @@ def _linux_mountpoints(dev: str) -> list:
     return mounts
 
 
+def revalidate(device: Device) -> None:
+    """Refuse to write when the disk behind the path is no longer the one the user picked."""
+    current = {d.path: d for d in list_devices(show_all=True)}
+    now = current.get(device.path)
+    if now is None or now.size != device.size or now.description != device.description \
+            or (device.serial and now.serial != device.serial) or now.ident != device.ident:
+        raise ImagerError(f"The selected disk ({device.label()}) is not there any more or has changed. "
+                          "Nothing was written; press Refresh and choose it again.")
+
+
+def _macos_boot_disks() -> set:
+    """Whole disks holding the running macOS: on APFS "/" is a synthesized disk on a physical store."""
+    disks: set = set()
+
+    def info(target: str) -> dict:
+        out = subprocess.run(["diskutil", "info", "-plist", target], capture_output=True)
+        try:
+            return plistlib.loads(out.stdout)
+        except Exception:  # noqa: BLE001
+            return {}
+
+    for mount in ("/", "/System/Volumes/Data"):
+        details = info(mount)
+        candidates = [details]
+        if details.get("ParentWholeDisk"):
+            disks.add(details["ParentWholeDisk"])
+            candidates.append(info(details["ParentWholeDisk"]))
+        for d in candidates:
+            for store in d.get("APFSPhysicalStores") or []:
+                name = store.get("APFSPhysicalStore", "") if isinstance(store, dict) else str(store)
+                m = re.match(r"(disk\d+)", name)
+                if m:
+                    disks.add(m.group(1))
+    return disks
+
+
 def list_devices(show_all: bool = False) -> list:
     """Disks that could take the image. The disk the running system lives on is never listed."""
     system = platform.system()
     devices: list = []
     if system == "Linux":
-        out = subprocess.run(["lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,MODEL,VENDOR,TRAN,RM,HOTPLUG,TYPE,RO,MOUNTPOINT"],
+        out = subprocess.run(["lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,MODEL,VENDOR,SERIAL,TRAN,RM,HOTPLUG,TYPE,RO,MOUNTPOINT"],
                              capture_output=True, text=True)
         try:
             tree = json.loads(out.stdout).get("blockdevices", [])
@@ -521,13 +649,15 @@ def list_devices(show_all: bool = False) -> list:
             if name.startswith("loop") and not show_all:
                 continue
             desc = " ".join(x for x in ((disk.get("vendor") or "").strip(), (disk.get("model") or "").strip()) if x) or disk.get("name", "")
-            devices.append(Device(disk.get("path") or f"/dev/{disk['name']}", int(disk.get("size") or 0), desc, removable, system_disk))
+            devices.append(Device(disk.get("path") or f"/dev/{disk['name']}", int(disk.get("size") or 0), desc, removable,
+                                  system_disk, serial=(disk.get("serial") or "").strip()))
     elif system == "Darwin":
         out = subprocess.run(["diskutil", "list", "-plist", "physical"], capture_output=True)
         try:
             listing = plistlib.loads(out.stdout)
         except Exception:  # noqa: BLE001
             listing = {}
+        boot_disks = _macos_boot_disks()
         for entry in listing.get("AllDisksAndPartitions", []):
             ident = entry.get("DeviceIdentifier", "")
             info_out = subprocess.run(["diskutil", "info", "-plist", ident], capture_output=True)
@@ -537,12 +667,17 @@ def list_devices(show_all: bool = False) -> list:
                 continue
             internal = bool(info.get("Internal"))
             removable = bool(info.get("Removable") or info.get("RemovableMedia") or info.get("Ejectable")) or not internal
-            system_disk = internal and any(p.get("MountPoint") == "/" for p in entry.get("Partitions", []) + entry.get("APFSVolumes", []))
+            # The boot disk, and any internal disk that is not removable media: a Mac has no internal
+            # disk worth erasing for a Pi, and a missed boot-disk detection must not expose the SSD.
+            # Built-in SD slots report Internal together with RemovableMedia and stay listed.
+            system_disk = ident in boot_disks or (internal and not removable) \
+                or any(p.get("MountPoint") == "/" for p in entry.get("Partitions", []) + entry.get("APFSVolumes", []))
             desc = info.get("MediaName") or info.get("IORegistryEntryName") or ident
             devices.append(Device(f"/dev/{ident}", int(info.get("TotalSize") or info.get("Size") or 0), desc, removable,
-                                  system_disk or (internal and not show_all), ident))
+                                  system_disk, ident))
     elif system == "Windows":
-        ps = ("Get-Disk | Select-Object Number,FriendlyName,Size,BusType,IsBoot,IsSystem,IsReadOnly | ConvertTo-Json -Compress")
+        ps = ("Get-Disk | Select-Object Number,FriendlyName,SerialNumber,Size,BusType,IsBoot,IsSystem,IsReadOnly"
+              " | ConvertTo-Json -Compress")
         out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True)
         try:
             data = json.loads(out.stdout or "[]")
@@ -558,7 +693,8 @@ def list_devices(show_all: bool = False) -> list:
                 continue
             num = str(disk.get("Number"))
             devices.append(Device(rf"\\.\PhysicalDrive{num}", int(disk.get("Size") or 0),
-                                  f"{disk.get('FriendlyName', 'Disk ' + num)} [{bus}]", removable, system_disk, num))
+                                  f"{disk.get('FriendlyName', 'Disk ' + num)} [{bus}]", removable, system_disk, num,
+                                  str(disk.get("SerialNumber") or "").strip()))
     devices = [d for d in devices if not d.system]
     if not show_all:
         devices = [d for d in devices if d.removable]
@@ -581,7 +717,7 @@ def write_image(image: Path, target: Target, settings: Settings, *, verify: bool
     report = progress or (lambda _stage, _fraction: None)
     payload = settings.payload()
     if layout is None:
-        layout = scan_image(image, progress)
+        layout = scan_image(image, progress, cancel)
     replacements = {layout.setup_offsets[n]: payload[(n - 1) * SECTOR: n * SECTOR] for n in range(1, SETUP_PARTS + 1)}
     if isinstance(target, DeviceTarget) and target.device.size and target.device.size < layout.image_end:
         raise ImagerError(f"The card is too small: {human(target.device.size)}, the image needs {human(layout.image_end)}.")
@@ -591,6 +727,8 @@ def write_image(image: Path, target: Target, settings: Settings, *, verify: bool
     held = b""
     written = 0
     verified = False
+    if cancel is not None and cancel.is_set():
+        raise ImagerError("Cancelled. Nothing was written.")
     target.open()
     try:
         with _open_raw(image) as raw:
@@ -618,10 +756,16 @@ def write_image(image: Path, target: Target, settings: Settings, *, verify: bool
                 pos += len(chunk)
                 written = pos
                 report("Writing", min(0.999, pos / max(layout.image_end, pos)))
+        if written < layout.image_end:
+            # a raw .img cut short (still being copied, an interrupted download) streams without an
+            # error; its partition table must not go out over a half-written root partition
+            raise ImagerError(f"The image file is incomplete: it ends at {human(written)}, its partitions need "
+                              f"{human(layout.image_end)}. Copy or download it again.")
         target.flush()
         # Verify while the card still has no partition table: once it has one,
         # Windows and macOS mount it and may touch the boot partition.
         if verify:
+            target.drop_cache()
             check = hashlib.sha256()
             pos = len(held)
             while pos < written:
@@ -639,6 +783,7 @@ def write_image(image: Path, target: Target, settings: Settings, *, verify: bool
         if held:
             target.write_at(0, held)   # the partition table last: the card is only usable when complete
             target.flush()
+            target.drop_cache()
             if verify and target.read_at(0, len(held)) != held:
                 raise ImagerError("Verification failed at the start of the card. Try another card.")
         verified = verify
@@ -740,27 +885,39 @@ def _self_command() -> list:
 
 def run_privileged_worker(job: dict, on_progress: Callable[[str, float], None], cancel: threading.Event) -> dict:
     """Run the write as administrator in a helper process; progress comes back through a file."""
+    system = platform.system()
+    if system == "Linux" and not shutil.which("pkexec"):
+        raise ImagerError("Writing needs administrator rights: run Genesis Imager with sudo.")
+    if system not in ("Linux", "Darwin"):
+        raise ImagerError("Run Genesis Imager as administrator to write cards.")
     workdir = Path(tempfile.mkdtemp(prefix="genesis-imager-"))
     os.chmod(workdir, 0o700)
-    job_file = workdir / "job.json"
+    # removed even if the window is closed while the password prompt is up
+    atexit.register(shutil.rmtree, workdir, True)
     progress_file = workdir / "progress.jsonl"
-    old_umask = os.umask(0o077)
-    try:
-        job_file.write_text(json.dumps(job))
-    finally:
-        os.umask(old_umask)
-    cmd = _self_command() + ["--worker", str(job_file), "--progress-file", str(progress_file)]
-    system = platform.system()
     if system == "Linux":
-        if not shutil.which("pkexec"):
-            raise ImagerError("Writing needs administrator rights: run Genesis Imager with sudo.")
-        proc = subprocess.Popen(["pkexec"] + cmd)
-    elif system == "Darwin":
-        quoted = " ".join("'" + c.replace("'", "'\\''") + "'" for c in cmd)
-        script = f'do shell script "{quoted}" with administrator privileges'
-        proc = subprocess.Popen(["osascript", "-e", script])
+        # pkexec passes standard input through: the job (Wi-Fi password, hash) never touches the disk
+        cmd = _self_command() + ["--worker", "-", "--progress-file", str(progress_file)]
+        proc = subprocess.Popen(["pkexec"] + cmd, stdin=subprocess.PIPE)
+        try:
+            proc.stdin.write(json.dumps(job).encode())
+            proc.stdin.close()
+        except OSError:
+            pass   # the prompt was dismissed: pkexec exited without reading
     else:
-        raise ImagerError("Run Genesis Imager as administrator to write cards.")
+        # the administrator prompt has no standard input to the command: a private file, deleted on read
+        job_file = workdir / "job.json"
+        old_umask = os.umask(0o077)
+        try:
+            job_file.write_text(json.dumps(job))
+        finally:
+            os.umask(old_umask)
+        cmd = _self_command() + ["--worker", str(job_file), "--progress-file", str(progress_file)]
+        quoted = " ".join("'" + c.replace("'", "'\\''") + "'" for c in cmd)
+        # handed to AppleScript as an argument, so nothing in the paths needs AppleScript escaping
+        proc = subprocess.Popen(["osascript", "-e", "on run argv", "-e",
+                                 "do shell script (item 1 of argv) with administrator privileges",
+                                 "-e", "end run", quoted])
     seen = 0
     result: dict = {}
     try:
@@ -785,6 +942,7 @@ def run_privileged_worker(job: dict, on_progress: Callable[[str, float], None], 
             time.sleep(0.3)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+        atexit.unregister(shutil.rmtree)
     if not result:
         raise ImagerError("The write was not authorised or the helper stopped unexpectedly.")
     if "error" in result:
@@ -794,8 +952,11 @@ def run_privileged_worker(job: dict, on_progress: Callable[[str, float], None], 
 
 def worker_main(job_path: str, progress_path: str) -> int:
     """Privileged helper: the job file names the image, the device and the settings."""
-    job = json.loads(Path(job_path).read_text())
-    Path(job_path).unlink(missing_ok=True)   # holds the password hash: gone as soon as read
+    if job_path == "-":
+        job = json.loads(sys.stdin.read())
+    else:
+        job = json.loads(Path(job_path).read_text())
+        Path(job_path).unlink(missing_ok=True)   # holds the Wi-Fi password and hash: gone as soon as read
     cancel = threading.Event()
     cancel_file = Path(progress_path).parent / "cancel"
 
@@ -850,6 +1011,24 @@ def save_remembered(settings: Settings) -> None:
 
 
 # ======================================================================== command line
+# what a damaged .xz, .gz or .zip raises while it is read
+STREAM_ERRORS = (lzma.LZMAError, EOFError, zlib.error, zipfile.BadZipFile, gzip.BadGzipFile)
+
+
+def check_output_path(out: Path, image: Path) -> None:
+    """--output makes an image file: never the source image itself, never a disk."""
+    if str(out).startswith(("\\\\.\\", "\\\\?\\")):
+        raise ImagerError("--output writes an image file; to write a disk use --device.")
+    try:
+        st = os.stat(out)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(st.st_mode):
+        raise ImagerError(f"{out} is not a regular file; to write a disk use --device.")
+    if image.exists() and os.path.samefile(out, image):
+        raise ImagerError("--output is the image itself; choose another file name.")
+
+
 def cli(argv: list) -> int:
     p = argparse.ArgumentParser(prog="genesis-imager", description="Write Genesis OS with your user, password and Wi-Fi.")
     p.add_argument("--version", action="version", version=f"Genesis Imager {VERSION}")
@@ -860,11 +1039,15 @@ def cli(argv: list) -> int:
     target.add_argument("--device", help="card or drive to write, e.g. /dev/sdb, /dev/disk4, \\\\.\\PhysicalDrive2")
     target.add_argument("--output", help="write a customised image file instead of a card")
     p.add_argument("--user", default=DEFAULTS["user"])
-    p.add_argument("--password", help="the account password (prompted for if omitted)")
+    p.add_argument("--password", help="the account password (prompted for if omitted; on the command line other "
+                                      "users can see it in the process list, so prefer the prompt or --password-file)")
     p.add_argument("--password-file", help="read the password from a file ('-' = standard input)")
     p.add_argument("--hostname", default=DEFAULTS["hostname"])
     p.add_argument("--wifi-ssid", default=DEFAULTS["wifi_ssid"], help="empty = no Wi-Fi")
-    p.add_argument("--wifi-password", default=None, help="prompted for if a Wi-Fi name is set and this is omitted")
+    p.add_argument("--wifi-password", default=None, help="prompted for if a Wi-Fi name is set and this is omitted "
+                                                          "(visible in the process list; prefer --wifi-password-file)")
+    p.add_argument("--wifi-password-file", help="read the Wi-Fi password from a file ('-' = standard input, after "
+                                                "the account password when that is read from standard input too)")
     p.add_argument("--wifi-hidden", action="store_true")
     p.add_argument("--wifi-country", default=DEFAULTS["wifi_country"])
     p.add_argument("--timezone", default=DEFAULTS["timezone"])
@@ -898,8 +1081,12 @@ def cli(argv: list) -> int:
     if not (args.device or args.output or args.print_payload):
         p.error("give --device or --output")
 
+    def read_secret(source: str) -> str:
+        text = sys.stdin.readline() if source == "-" else Path(source).read_text().split("\n", 1)[0]
+        return text.rstrip("\r\n")
+
     if args.password_file:
-        password = (sys.stdin.readline() if args.password_file == "-" else Path(args.password_file).read_text()).rstrip("\r\n")
+        password = read_secret(args.password_file)
     elif args.password is not None:
         password = args.password
     else:
@@ -907,7 +1094,7 @@ def cli(argv: list) -> int:
         if getpass.getpass("Again: ") != password:
             print("The passwords differ.", file=sys.stderr)
             return 2
-    wifi_password = args.wifi_password
+    wifi_password = read_secret(args.wifi_password_file) if args.wifi_password_file else args.wifi_password
     if args.wifi_ssid and wifi_password is None:
         wifi_password = getpass.getpass(f"Wi-Fi password for {args.wifi_ssid} (empty for an open network): ")
     keys = []
@@ -936,6 +1123,7 @@ def cli(argv: list) -> int:
         layout = scan_image(image, progress)
         print(f"\nImage: {image.name}, {human(layout.image_end)}; setup area found.")
         if args.output:
+            check_output_path(Path(args.output), image)
             target: Target = FileTarget(Path(args.output))
         else:
             devices = {d.path: d for d in list_devices(show_all=True)}
@@ -957,9 +1145,15 @@ def cli(argv: list) -> int:
               + (", verified." if res.verified else ".") + f" sha256 {res.sha256}")
         print(f"First boot: user {settings.user}, host {settings.hostname or '(unchanged)'}"
               + (f", Wi-Fi {settings.wifi_ssid}" if settings.wifi_ssid else "") + ".")
+        if args.output:
+            print(f"{args.output} holds the Wi-Fi password and the password hash: it is readable only by you; "
+                  "delete it once the card is written.")
         return 0
     except ImagerError as exc:
         print(f"\nError: {exc}", file=sys.stderr)
+        return 1
+    except STREAM_ERRORS as exc:
+        print(f"\nError: the image file is damaged or incomplete ({type(exc).__name__}: {exc}).", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
@@ -1087,8 +1281,11 @@ def gui() -> int:  # noqa: C901 - one screen, built in one place
             state["devices"] = []
             status_var.set(f"Could not list disks: {exc}")
         device_box["values"] = [d.label() for d in state["devices"]]
-        if state["devices"]:
-            device_box.current(0)
+        removable = [i for i, d in enumerate(state["devices"]) if d.removable]
+        if removable:
+            device_box.current(removable[0])   # never preselect a fixed disk
+        elif state["devices"]:
+            device_box.set("Choose a disk")
         else:
             device_var.set("Insert a card, then Refresh")
         refresh_write_button()
@@ -1236,6 +1433,17 @@ def gui() -> int:  # noqa: C901 - one screen, built in one place
             return
         device = state["devices"][device_box.current()] if device_box.current() >= 0 else None
         if device is None:
+            messagebox.showerror("Genesis Imager", "Choose the card to write.")
+            return
+        # the list may be minutes old: a card swapped since then can carry the same name
+        try:
+            fresh = list_devices(show_all=True)
+        except Exception:  # noqa: BLE001
+            fresh = []
+        if device not in fresh:
+            refresh_devices()
+            messagebox.showerror("Genesis Imager", "The disks changed since the list was made. Check the selected disk "
+                                 "and press Write again.")
             return
         if not messagebox.askyesno("Erase the card?", f"Everything on\n\n{device.label()}\n\nwill be erased and replaced with Genesis OS.\n\nContinue?",
                                    icon="warning"):
@@ -1260,6 +1468,14 @@ def gui() -> int:  # noqa: C901 - one screen, built in one place
 
         run_task("Writing", job, on_done=done)
 
+    def on_close():
+        if state["busy"]:
+            messagebox.showwarning("Genesis Imager", "A write is in progress. Press Cancel and wait for it to stop "
+                                   "before closing; a card left half-written does not boot.")
+            return
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     refresh_devices()
     root.mainloop()
     return 0

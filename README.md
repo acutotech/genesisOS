@@ -6,7 +6,8 @@ floating glass panel, full-screen app launcher, control center, notifications,
 on-screen display, power dialog and wallpaper, all drawn by our own code on top
 of labwc, the compositor Raspberry Pi ships and tests on the Pi 5. Plus the
 Genesis logo on the boot splash and login screen, Visual Studio Code, Python
-3.10 and 3.13, Chromium, a Genesis Settings app, and the hardware interfaces
+3.10 and 3.15 for your code (the OS keeps its own 3.13), Chromium, a Genesis
+Settings app, and the hardware interfaces
 switched on. Built with [pi-gen](https://github.com/RPi-Distro/pi-gen), the
 tool that produces the official images, in **GitHub Actions** or **locally
 with Docker**.
@@ -54,10 +55,12 @@ Why these choices, in two sentences each:
   under `/opt/python/<version>` that nothing in the OS uses:
   3.10.22 as `python` / `pip` (also `python3.10`, `pip3.10`) and 3.15.1 as
   `python3.15` / `pip3.15`. `pip install` without a virtual environment goes
-  to `~/.local`. Two things to know: 3.10.22 is the last 3.10 release and the
-  series is end-of-life, so plan to move your code on; and 3.15 is new, so
-  some packages have no aarch64 wheels for it yet (`uv python install 3.14`
-  is one command away). The Raspberry Pi libraries the OS ships (`gpiozero`,
+  to `~/.local`. A user Python of the system's own series (3.13) is refused
+  at build time: it would share `~/.local/lib/python3.13` with the desktop.
+  Two things to know: 3.10.22 is the last 3.10 release and the series is
+  end-of-life, so plan to move your code on; and 3.15 is new, so some
+  packages have no aarch64 wheels for it yet (`uv python install 3.14` is one
+  command away). The Raspberry Pi libraries the OS ships (`gpiozero`,
   `rpi-lgpio`, `picamera2`) live in the system 3.13; in your Pythons install
   what you need with `pip install gpiozero rpi-lgpio`, or run `python3`.
 * **Credentials come from the imager, not the image.** A password baked into
@@ -124,6 +127,13 @@ into apps for Windows, macOS (Apple silicon) and Linux.
 
 It writes the whole card, partition table last, reads it back to verify, and
 ejects it. Your choices except the passwords are remembered for next time.
+Before erasing anything it lists the disks again and stops if the selected
+one changed (a card swapped since the list was made); the disk your computer
+runs from is never offered, not even with *Show fixed disks*. It checks the
+settings the way the box will: a user name that is already a system account
+or group (`games`, `video`, ...), a Wi-Fi passphrase over 63 bytes, a
+country that is not an ISO code (`UK` is `GB`), a time zone your computer does
+not know, or "key logins only" without a key are refused before writing.
 
 * **Windows:** run `genesis-imager-windows-x64.exe`; it asks for administrator
   rights (needed to write a disk). SmartScreen may warn about an unsigned app:
@@ -131,7 +141,9 @@ ejects it. Your choices except the passwords are remembered for next time.
 * **macOS:** unzip, then right-click *Genesis Imager* → *Open* the first time
   (the app is not notarised). It asks for your password when writing.
 * **Linux:** `chmod +x genesis-imager-linux-x86_64 && ./genesis-imager-linux-x86_64`
-  (asks for your password through polkit), or `python3 imager/genesis_imager.py`.
+  (asks for your password through polkit; needs glibc 2.35 or newer: Ubuntu
+  22.04, Debian 12 or later), or on any distribution `python3 imager/genesis_imager.py`
+  (with `python3-tk` for the window).
 
 Command line (any OS with Python 3.9+, no window needed):
 
@@ -144,7 +156,13 @@ python3 imager/genesis_imager.py --image genesis-os.img.xz --output nodobox.img 
 
 It prompts for the password and the Wi-Fi passphrase; `--help` lists every
 option (`--wifi-ssid ""` for no Wi-Fi, `--ssh-key-file`, `--ssh-keys-only`,
-`--timezone`, `--keyboard`, `--hostname`, `--no-ssh`, `--image latest`).
+`--timezone`, `--keyboard`, `--hostname`, `--no-ssh`, `--image latest`). For
+scripts, `--password-file` and `--wifi-password-file` read the secrets from
+files or, with `-`, from standard input (password first): `--password` and
+`--wifi-password` work too, but everything on a command line is visible to
+other users in the process list and lands in sudo's log. A file written with
+`--output` contains the Wi-Fi passphrase and the password hash, so it is
+created readable only by you; delete it once the card is written.
 
 **How it works.** The image's boot partition holds `genesis-setup.txt`, a
 placeholder of 16 blocks of 512 bytes, each starting with a marker. While
@@ -492,9 +510,18 @@ imager/                         Genesis Imager (genesis_imager.py) and its tests
   `genesis-setup-result.txt` on the boot partition (any computer can open it).
 * **Genesis Imager says the image has no setup area:** the image was built
   before Genesis Imager existed, or it is not a Genesis OS image. Build or
-  download a current one.
+  download a current one. If it says the image was *already customised*, you
+  picked a file made with `--output`: choose the original image to change the
+  settings, or write that file with any image writer.
+* **Genesis Imager says the image file is incomplete:** the `.img` is shorter
+  than its own partition table says (still being copied or unzipped, or an
+  interrupted download). Nothing was made bootable; copy it again.
 * **Genesis Imager lists no card:** check *Show fixed disks* (some USB card
-  readers report as fixed disks), then *Refresh*.
+  readers report as fixed disks), then *Refresh*. Built-in SD slots on Macs are
+  listed as they are.
+* **The first boot kept the login prompt although I wanted autologin (or the
+  other way round):** the image's `DESKTOP_AUTOLOGIN` decides; Genesis Imager
+  keeps the build's choice for the renamed user.
 
 ## Alternatives
 

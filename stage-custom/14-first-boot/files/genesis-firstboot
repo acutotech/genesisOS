@@ -99,7 +99,7 @@ log "applying settings written by $(get CREATED_BY)"
 
 # --- account -------------------------------------------------------------------------
 apply_user() {
-	local new hash first
+	local new hash first gid nopasswd tmp
 	new="$(get USER)"
 	hash="$(get PASSWORD_HASH)"
 	[ -n "${new}${hash}" ] || return 0
@@ -120,11 +120,27 @@ apply_user() {
 		note "user: '${new}' already exists; account unchanged"
 		return 1
 	fi
-	# userconf ends with cancel-rename, which keeps desktop autologin only when this flag exists
-	if [ "$(raspi-config nonint get_autologin 2> /dev/null)" = 0 ]; then
-		mkdir -p "${R}/var/lib/userconf-pi"
-		touch "${R}/var/lib/userconf-pi/autologin"
+	# a group of that name (video, users, gpio, ...) would make the group rename fail half-way
+	gid="$(getent group "${new}" | cut -d: -f3)"
+	if [ "${new}" != "${first}" ] && [ -n "${gid}" ] && [ "${gid}" != "$(getent passwd 1000 | cut -d: -f4)" ]; then
+		note "user: '${new}' is already a group name; account unchanged"
+		return 1
 	fi
+	# userconf ends with cancel-rename, which turns desktop autologin on only when this flag
+	# exists. With the wizard armed, rename-user already recorded the build's choice in it
+	# (and lightdm now autologins the wizard user, so get_autologin would always say yes).
+	if ! [ -e "${R}/etc/xdg/autostart/piwiz.desktop" ] \
+		&& ! grep -q '^autologin-user=rpi-first-boot-wizard$' "${R}/etc/lightdm/lightdm.conf" 2> /dev/null; then
+		if [ "$(raspi-config nonint get_autologin 2> /dev/null)" = 0 ]; then
+			mkdir -p "${R}/var/lib/userconf-pi"
+			touch "${R}/var/lib/userconf-pi/autologin"
+		else
+			rm -f "${R}/var/lib/userconf-pi/autologin"
+		fi
+	fi
+	# raspi-config's do_sudo_pass writes /etc/sudoers.d/010_<user>-nopasswd, which no rename follows
+	nopasswd=""
+	[ -f "${R}/etc/sudoers.d/010_${first}-nopasswd" ] && nopasswd="${R}/etc/sudoers.d/010_${first}-nopasswd"
 	if [ -x "${R}/usr/lib/userconf-pi/userconf" ]; then
 		if ! "${R}/usr/lib/userconf-pi/userconf" "${new}" "${hash}" >> "${LOG}" 2>&1; then
 			note "user: userconf-pi failed (see the log); account may be half renamed"
@@ -143,6 +159,15 @@ apply_user() {
 		usermod -s /bin/bash "${new}"
 		printf '%s:%s\n' "${new}" "${hash}" | chpasswd -e || { note "user: setting the password failed"; return 1; }
 		sed -i "s/^#\?autologin-user=.*/autologin-user=${new}/" "${R}/etc/lightdm/lightdm.conf" 2> /dev/null || true
+	fi
+	if [ -n "${nopasswd}" ] && [ "${new}" != "${first}" ]; then
+		tmp="$(mktemp)"
+		printf '%s ALL=(ALL) NOPASSWD: ALL\n' "${new}" > "${tmp}"
+		if ! command -v visudo > /dev/null || visudo -cqf "${tmp}"; then
+			install -m 440 "${tmp}" "${R}/etc/sudoers.d/010_${new}-nopasswd"
+			rm -f "${nopasswd}"
+		fi
+		rm -f "${tmp}"
 	fi
 	if [ "${new}" != "${first}" ] && [ -f "${R}/var/lib/AccountsService/users/${first}" ]; then
 		mv "${R}/var/lib/AccountsService/users/${first}" "${R}/var/lib/AccountsService/users/${new}"
@@ -174,12 +199,14 @@ apply_hostname() {
 		printf '127.0.1.1\t%s\n' "${name}" >> "${R}/etc/hosts"
 	fi
 	hostname "${name}" 2> /dev/null || true
+	# the unit runs before avahi-daemon; should avahi be up anyway, it announces the new name after this
+	systemctl --no-block try-restart avahi-daemon.service > /dev/null 2>&1 || true
 	note "hostname: ${name}"
 }
 
 # --- Wi-Fi ----------------------------------------------------------------------------
 apply_wifi() {
-	local ssid psk country hidden dir file bytes
+	local ssid psk psk_bytes country hidden dir file bytes
 	ssid="$(b64 WIFI_SSID_B64)"
 	psk="$(b64 WIFI_PSK_B64)"
 	country="$(get WIFI_COUNTRY)"
@@ -196,7 +223,9 @@ apply_wifi() {
 		note "wifi: the network name is not valid; not configured"
 		return 1
 	fi
-	if [ -n "${psk}" ] && ! { [ "${#psk}" -ge 8 ] && [ "${#psk}" -le 63 ] && [[ "${psk}" != *$'\n'* ]] || [[ "${psk}" =~ ^[0-9a-fA-F]{64}$ ]]; }; then
+	# NetworkManager counts bytes, whatever the locale: 8 to 63, or 64 hex digits
+	psk_bytes="$(printf '%s' "${psk}" | wc -c)"
+	if [ -n "${psk}" ] && ! { [ "${psk_bytes}" -ge 8 ] && [ "${psk_bytes}" -le 63 ] && [[ "${psk}" != *$'\n'* ]] || [[ "${psk}" =~ ^[0-9a-fA-F]{64}$ ]]; }; then
 		note "wifi: the password must be 8 to 63 characters; not configured"
 		return 1
 	fi
@@ -225,7 +254,7 @@ apply_wifi() {
 
 # --- time zone and keyboard ---------------------------------------------------------------
 apply_locale() {
-	local tz kb variant
+	local tz kb variant symbols
 	tz="$(get TIMEZONE)"
 	if [ -n "${tz}" ]; then
 		if [[ "${tz}" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && [ -f "${R}/usr/share/zoneinfo/${tz}" ]; then
@@ -239,11 +268,13 @@ apply_locale() {
 	kb="$(get KEYBOARD)"
 	variant="$(get KEYBOARD_VARIANT)"
 	if [ -n "${kb}" ]; then
-		if [[ "${kb}" =~ ^[a-z]{2,10}$ ]] && [[ "${variant}" =~ ^[a-z0-9_-]{0,24}$ ]] && [ -f "${R}/etc/default/keyboard" ]; then
+		symbols="${R}/usr/share/X11/xkb/symbols/${kb}"
+		if [[ "${kb}" =~ ^[a-z]{2,10}$ ]] && [[ "${variant}" =~ ^[a-z0-9_-]{0,24}$ ]] && [ -f "${R}/etc/default/keyboard" ] \
+			&& [ -f "${symbols}" ] && { [ -z "${variant}" ] || grep -q "xkb_symbols \"${variant}\"" "${symbols}"; }; then
 			sed -i -e "s/^XKBLAYOUT=.*/XKBLAYOUT=\"${kb}\"/" -e "s/^XKBVARIANT=.*/XKBVARIANT=\"${variant}\"/" "${R}/etc/default/keyboard"
 			note "keyboard: ${kb}${variant:+ (${variant})}"
 		else
-			note "keyboard: '${kb}' not applied"
+			note "keyboard: '${kb}${variant:+ (${variant})}' is not a known layout; unchanged"
 		fi
 	fi
 }
@@ -277,7 +308,10 @@ apply_ssh() {
 		fi
 	fi
 	if [ "$(get SSH_PASSWORD_AUTH)" = 0 ]; then
-		if [ -n "${keys}" ]; then
+		if [ "${USER_OK}" != 1 ]; then
+			# keys for an account that was not set up would lock everyone out
+			note "ssh: password logins kept (the account was not set up)"
+		elif [ -n "${keys}" ]; then
 			mkdir -p "${R}/etc/ssh/sshd_config.d"
 			printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' > "${R}/etc/ssh/sshd_config.d/20-genesis-keys-only.conf"
 			note "ssh: key logins only"
@@ -287,7 +321,8 @@ apply_ssh() {
 	fi
 }
 
-apply_user || true
+USER_OK=0
+apply_user && USER_OK=1
 apply_hostname || true
 apply_wifi || true
 apply_locale || true

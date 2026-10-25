@@ -425,6 +425,23 @@ assert_grep '^# pi-gen placeholder network-config' "${NETCFG}"
 assert_grep '^# pi-gen placeholder user-data' "${ROOTFS_DIR}/boot/firmware/user-data"
 
 # ===================================================================================
+echo "Scenario 6: a user Python of the system's own series is refused"
+reset_knobs
+make_rootfs
+touch "${ROOTFS_DIR}/usr/bin/python3.13"
+if (cd "${STAGE_DIR}/08-python" && PYTHON_LATEST=3.13.17 PYTHON_LATEST_PBS_TAG=20261021 \
+	PYTHON_LATEST_PBS_SHA256=c6857c65b996701a5da104cbb49b35249c0c026dc0664239b04f7156aa88326a ./00-run.sh > /dev/null 2>&1); then
+	fail "PYTHON_LATEST=3.13.17 on a 3.13 system should fail"
+else
+	ok "PYTHON_LATEST=3.13.17 on a 3.13 system fails"
+fi
+if (cd "${STAGE_DIR}/08-python" && PYTHON_LATEST=3.14.9 ./00-run.sh > /dev/null 2>&1); then
+	ok "PYTHON_LATEST=3.14.9 (pinned) is accepted"
+else
+	fail "PYTHON_LATEST=3.14.9 should be accepted"
+fi
+
+# ===================================================================================
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [ "${FAIL}" -eq 0 ]

@@ -57,10 +57,12 @@ TEST_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGenesisSmokeTestKey00000000000000
 if [ "${FIRSTBOOT}" = 1 ]; then
 	echo "image-smoke: writing $(basename "${IMAGE}") through Genesis Imager (user ${TEST_USER})"
 	printf '%s\n' "${TEST_KEY}" > "${WORK}/test.pub"
-	printf '%s\n' "${TEST_PASS}" | python3 "${REPO_DIR}/imager/genesis_imager.py" \
-		--image "${IMAGE}" --output "${WORK}/image.img" --password-file - \
-		--user "${TEST_USER}" --hostname "${TEST_HOST}" --wifi-ssid "Genesis Smoke" --wifi-password "${TEST_PSK}" \
-		--wifi-country IN --timezone Asia/Tokyo --keyboard gb --ssh-key-file "${WORK}/test.pub" \
+	# every setting differs from the image's defaults, so each check proves first boot applied it;
+	# the secrets go in on standard input, never on the command line
+	printf '%s\n%s\n' "${TEST_PASS}" "${TEST_PSK}" | python3 "${REPO_DIR}/imager/genesis_imager.py" \
+		--image "${IMAGE}" --output "${WORK}/image.img" --password-file - --wifi-password-file - \
+		--user "${TEST_USER}" --hostname "${TEST_HOST}" --wifi-ssid "Genesis Smoke" \
+		--wifi-country JP --timezone Asia/Tokyo --keyboard gb --ssh-key-file "${WORK}/test.pub" \
 		| tr '\r' '\n' | grep -v '%$' || { echo "image-smoke: FAIL Genesis Imager could not write the image" >&2; exit 1; }
 else
 echo "image-smoke: unpacking $(basename "${IMAGE}")"
@@ -144,7 +146,9 @@ first_boot() {
 	nm="${ROOT}/etc/NetworkManager/system-connections/genesis-wifi.nmconnection"
 	check "Wi-Fi connection written" grep -q "^psk=${TEST_PSK}$" "${nm}"
 	check "Wi-Fi connection is private" test "$(stat -c %a "${nm}" 2> /dev/null)" = 600
-	check "Wi-Fi country in cmdline.txt" grep -q 'cfg80211.ieee80211_regdom=IN' "${fw}/cmdline.txt"
+	check "Wi-Fi country JP in cmdline.txt" grep -q 'cfg80211.ieee80211_regdom=JP' "${fw}/cmdline.txt"
+	check "build-time Wi-Fi country replaced" test -z "$(grep -o 'cfg80211.ieee80211_regdom=IN' "${fw}/cmdline.txt")"
+	check "result file reports the country" grep -qx 'wifi country: JP' "${fw}/genesis-setup-result.txt"
 	check "time zone Asia/Tokyo" test "$(readlink "${ROOT}/etc/localtime")" = /usr/share/zoneinfo/Asia/Tokyo
 	check "keyboard gb" grep -q '^XKBLAYOUT="gb"$' "${ROOT}/etc/default/keyboard"
 	check "SSH key authorised" grep -qF "${TEST_KEY}" "${ROOT}/home/${TEST_USER}/.ssh/authorized_keys"

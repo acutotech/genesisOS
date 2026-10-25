@@ -138,7 +138,8 @@ jobs:
         include:
           - {os: windows-latest, name: windows-x64}
           - {os: macos-latest, name: macos-arm64}
-          - {os: ubuntu-24.04, name: linux-x86_64}
+          # the oldest supported runner: the app needs the build machine's glibc (2.35) or newer
+          - {os: ubuntu-22.04, name: linux-x86_64}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

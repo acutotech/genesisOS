@@ -28,7 +28,6 @@ UV_SHA256="${UV_SHA256:-9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a
 pin_for() {
 	case "$1" in
 		3.10.22) echo "20261009:ecbe978a7ecbeb3a9aed67bb5d161180701513b4fa8101037b2a3f1ac11e96be" ;;
-		3.13.17) echo "20261021:c6857c65b996701a5da104cbb49b35249c0c026dc0664239b04f7156aa88326a" ;;
 		3.14.9) echo "20261021:6f77731d85a14ed848dd4041478cd3ed511523caa3d896b84b436a7edf13cf62" ;;
 		3.15.1) echo "20261021:6efe65c43ae0bdebebeab4607f91a0053dd36d5e51cfd69a791d544e9b122be7" ;;
 		*) return 1 ;;
@@ -63,6 +62,13 @@ for role in PRIMARY LATEST; do
 		fi
 		tag="${tag:-${pin%%:*}}"
 		sha="${sha:-${pin#*:}}"
+	fi
+	# A user Python of the system's own series (3.13 on trixie) would be "python3.13"/"pip3.13" first
+	# in PATH and share ~/.local/lib/python3.13 with the system Python, so a user's pip install
+	# could replace packages the desktop runs on.
+	if [ -e "${ROOTFS_DIR}/usr/bin/python${version%.*}" ]; then
+		echo "${var}=${version}: python${version%.*} is the system Python's series; choose another version" >&2
+		exit 1
 	fi
 	PLAN+=("${role} ${version} ${tag} ${sha}")
 done

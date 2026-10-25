@@ -34,10 +34,10 @@ CALLS="${WORK}/calls.log"
 mkdir -p "${STUBS}"
 stub() { printf '#!/bin/bash\n%s\n' "$2" > "${STUBS}/$1"; chmod +x "${STUBS}/$1"; }
 stub getent 'db=$1; key=$2
-[ "$db" = passwd ] || exit 2
-awk -F: -v k="$key" '"'"'($1 == k || $3 == k) { print; found = 1 } END { exit !found }'"'"' "$GENESIS_ROOT/etc/passwd"'
+case "$db" in passwd | group) ;; *) exit 2 ;; esac
+awk -F: -v k="$key" '"'"'($1 == k || $3 == k) { print; found = 1 } END { exit !found }'"'"' "$GENESIS_ROOT/etc/$db"'
 stub raspi-config 'echo "raspi-config $*" >> "$CALLS"
-case "$2" in get_autologin) echo 0 ;; do_wifi_country) [ -n "$3" ] ;; esac'
+case "$2" in get_autologin) echo "${AUTOLOGIN:-0}" ;; do_wifi_country) [ -n "$3" ] ;; esac'
 stub systemctl 'echo "systemctl $*" >> "$CALLS"'
 stub hostname 'echo "hostname $*" >> "$CALLS"'
 stub nmcli 'echo "nmcli $*" >> "$CALLS"'
@@ -45,6 +45,7 @@ stub chown 'echo "chown $*" >> "$CALLS"'
 stub usermod 'echo "usermod $*" >> "$CALLS"'
 stub groupmod 'echo "groupmod $*" >> "$CALLS"'
 stub chpasswd 'echo "chpasswd $* <$(cat)>" >> "$CALLS"'
+stub visudo 'echo "visudo $*" >> "$CALLS"'
 export CALLS PATH="${STUBS}:${PATH}"
 
 R="${WORK}/root"
@@ -52,8 +53,12 @@ make_root() {
 	rm -rf "${R}" "${CALLS}"
 	mkdir -p "${R}/boot/firmware" "${R}/etc/default" "${R}/etc/lightdm" "${R}/etc/genesis" \
 		"${R}/home/nodoai" "${R}/usr/share/genesis" "${R}/usr/share/zoneinfo/Asia" \
-		"${R}/var/lib/AccountsService/users" "${R}/usr/lib/userconf-pi" "${R}/usr/lib/genesis-settings"
+		"${R}/var/lib/AccountsService/users" "${R}/usr/lib/userconf-pi" "${R}/usr/lib/genesis-settings" \
+		"${R}/usr/share/X11/xkb/symbols" "${R}/etc/sudoers.d"
 	printf 'root:x:0:0:root:/root:/bin/bash\nnodoai:x:1000:1000:,,,:/home/nodoai:/usr/sbin/nologin\n' > "${R}/etc/passwd"
+	printf 'root:x:0:\nvideo:x:44:nodoai\nnodoai:x:1000:\n' > "${R}/etc/group"
+	printf 'default xkb_symbols "basic" {\n};\n' > "${R}/usr/share/X11/xkb/symbols/us"
+	printf 'default xkb_symbols "basic" {\n};\nxkb_symbols "extd" {\n};\n' > "${R}/usr/share/X11/xkb/symbols/gb"
 	printf '127.0.0.1\tlocalhost\n127.0.1.1\tnodobox\n' > "${R}/etc/hosts"
 	printf 'nodobox\n' > "${R}/etc/hostname"
 	printf 'XKBMODEL="pc105"\nXKBLAYOUT="us"\nXKBVARIANT=""\nXKBOPTIONS=""\n' > "${R}/etc/default/keyboard"
@@ -107,6 +112,7 @@ SETTINGS="$(python3 -c 'import json, sys; print(json.dumps({
     "wifi_country": "JP", "timezone": "Asia/Tokyo", "keyboard": "gb", "keyboard_variant": "extd",
     "ssh": True, "ssh_password_auth": False, "ssh_keys": [sys.argv[2], sys.argv[3]]}))' "${HASH}" "${KEY1}" "${KEY2}")"
 imager_payload "${SETTINGS}" > /dev/null
+printf 'nodoai ALL=(ALL) NOPASSWD: ALL\n' > "${R}/etc/sudoers.d/010_nodoai-nopasswd"    # PASSWORDLESS_SUDO=1
 assert_eq "$(head -c 15 "${R}/boot/firmware/genesis-setup.txt")" "GENESIS_SETUP=1" "setup area written"
 if run_firstboot; then ok "genesis-firstboot exits 0"; else fail "genesis-firstboot failed: $(cat "${WORK}/out.log")"; fi
 
@@ -118,6 +124,11 @@ assert_grep '^systemctl --no-block stop userconfig.service$' "${CALLS}"
 assert_grep '^genesis-helper SUDO_USER=tester session genesis$' "${CALLS}"
 assert_file "${R}/var/lib/AccountsService/users/tester"
 assert_no_file "${R}/var/lib/AccountsService/users/nodoai"
+assert_eq "$(cat "${R}/etc/sudoers.d/010_tester-nopasswd" 2> /dev/null)" "tester ALL=(ALL) NOPASSWD: ALL" "passwordless sudo follows the rename"
+assert_eq "$(stat -c %a "${R}/etc/sudoers.d/010_tester-nopasswd" 2> /dev/null)" 440 "sudoers file is 440"
+assert_no_file "${R}/etc/sudoers.d/010_nodoai-nopasswd"
+assert_grep '^visudo -cqf ' "${CALLS}"
+assert_grep '^systemctl --no-block try-restart avahi-daemon.service$' "${CALLS}"
 
 assert_eq "$(cat "${R}/etc/hostname")" picard "hostname written"
 assert_grep $'^127\\.0\\.1\\.1\tpicard$' "${R}/etc/hosts"
@@ -216,6 +227,58 @@ NM="${R}/etc/NetworkManager/system-connections/genesis-wifi.nmconnection"
 assert_no_grep '[wifi-security]' "${NM}"
 assert_no_grep 'hidden=' "${NM}"
 assert_grep '^user: nodoai, password set$' "${R}/boot/firmware/genesis-setup-result.txt"
+
+# =========================================================================================
+echo "Scenario 6: the wizard is armed; the build's autologin choice (kept by rename-user) wins"
+for flag in absent present; do
+	make_root
+	mkdir -p "${R}/etc/xdg/autostart" "${R}/var/lib/userconf-pi"
+	printf '[Desktop Entry]\nExec=piwiz\n' > "${R}/etc/xdg/autostart/piwiz.desktop"
+	printf '[Seat:*]\nautologin-user=rpi-first-boot-wizard\n' > "${R}/etc/lightdm/lightdm.conf"
+	[ "${flag}" = present ] && touch "${R}/var/lib/userconf-pi/autologin"
+	imager_payload '{"user": "tester", "password_hash": "'"${HASH}"'", "wifi_ssid": ""}' > /dev/null
+	if run_firstboot; then ok "exits 0 (flag ${flag})"; else fail "failed (flag ${flag})"; fi
+	if [ "${flag}" = present ]; then
+		assert_file "${R}/var/lib/userconf-pi/autologin"
+	else
+		assert_no_file "${R}/var/lib/userconf-pi/autologin"   # DESKTOP_AUTOLOGIN=0 stays off
+	fi
+done
+echo "Scenario 6b: no wizard (image built with a password) and autologin off"
+make_root
+touch "${R}/var/lib/AccountsService/users/nodoai"
+mkdir -p "${R}/var/lib/userconf-pi"
+touch "${R}/var/lib/userconf-pi/autologin"   # stale
+imager_payload '{"user": "tester", "password_hash": "'"${HASH}"'", "wifi_ssid": ""}' > /dev/null
+if AUTOLOGIN=1 run_firstboot; then ok "exits 0"; else fail "failed"; fi
+assert_no_file "${R}/var/lib/userconf-pi/autologin"
+
+# =========================================================================================
+echo "Scenario 7: a user name that is a group is refused, and SSH is not locked to keys for nobody"
+make_root
+printf 'GENESIS_SETUP=1\nUSER=video\nPASSWORD_HASH=%s\nSSH=1\nSSH_PASSWORD_AUTH=0\nSSH_KEYS_B64=%s\nEND=1\n' \
+	"${HASH}" "$(printf '%s' "${KEY1}" | base64 -w0)" | dd of="${R}/boot/firmware/genesis-setup.txt" conv=notrunc status=none
+if run_firstboot; then ok "exits 0"; else fail "failed"; fi
+assert_eq "$(grep -c '^userconf ' "${CALLS}" || true)" 0 "group name: userconf-pi not called"
+assert_grep "^user: 'video' is already a group name; account unchanged$" "${R}/boot/firmware/genesis-setup-result.txt"
+assert_grep '^ssh: password logins kept \(the account was not set up\)$' "${R}/boot/firmware/genesis-setup-result.txt"
+assert_no_file "${R}/etc/ssh/sshd_config.d/20-genesis-keys-only.conf"
+
+# =========================================================================================
+echo "Scenario 8: unknown keyboard layouts and over-long passphrases are reported, not applied"
+make_root
+PSK64="$(python3 -c 'print("é" * 32, end="")')"   # 32 characters, 64 bytes, not hex
+printf 'GENESIS_SETUP=1\nKEYBOARD=uk\nKEYBOARD_VARIANT=\nWIFI_SSID_B64=%s\nWIFI_PSK_B64=%s\nEND=1\n' \
+	"$(printf 'Cafe' | base64)" "$(printf '%s' "${PSK64}" | base64 -w0)" | dd of="${R}/boot/firmware/genesis-setup.txt" conv=notrunc status=none
+if LC_ALL=C.UTF-8 run_firstboot; then ok "exits 0"; else fail "failed"; fi
+assert_grep "^keyboard: 'uk' is not a known layout; unchanged$" "${R}/boot/firmware/genesis-setup-result.txt"
+assert_grep '^XKBLAYOUT="us"$' "${R}/etc/default/keyboard"
+assert_grep '^wifi: the password must be 8 to 63 characters' "${R}/boot/firmware/genesis-setup-result.txt"
+assert_no_file "${R}/etc/NetworkManager/system-connections/genesis-wifi.nmconnection"
+make_root
+printf 'GENESIS_SETUP=1\nKEYBOARD=gb\nKEYBOARD_VARIANT=dvorakx\nEND=1\n' | dd of="${R}/boot/firmware/genesis-setup.txt" conv=notrunc status=none
+if run_firstboot; then ok "exits 0"; else fail "failed"; fi
+assert_grep "^keyboard: 'gb \(dvorakx\)' is not a known layout; unchanged$" "${R}/boot/firmware/genesis-setup-result.txt"
 
 echo
 echo "${PASS} passed, ${FAIL} failed"

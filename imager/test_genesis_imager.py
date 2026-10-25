@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import lzma
+import os
 import plistlib
 import shutil
 import struct
@@ -217,6 +218,39 @@ class SetupAreaTest(unittest.TestCase):
         settings(wifi_password="ab" * 32).validate()                # 64 hex digits: a raw PSK
         settings(hostname="").validate()                            # keep the image's host name
 
+    def test_validation_matches_what_first_boot_accepts(self):
+        refused = {
+            "a system account": dict(user="games"),
+            "a system group": dict(user="video"),
+            "the wizard user": dict(user="rpi-first-boot-wizard"),
+            "a PSK over 63 bytes in 32 characters": dict(wifi_password="é" * 32),
+            "a PSK with a line break": dict(wifi_password="password\nline"),
+            "an SSID with a line break": dict(wifi_ssid="net\nwork"),
+            "key logins only without a key": dict(ssh_password_auth=False),
+            "a made-up country": dict(wifi_country="XX"),
+            "UK for the United Kingdom": dict(wifi_country="UK"),
+            "uk as a keyboard layout": dict(keyboard="uk"),
+        }
+        for why, kw in refused.items():
+            with self.subTest(why):
+                with self.assertRaises(g.ImagerError):
+                    settings(**kw).validate()
+        with self.assertRaisesRegex(g.ImagerError, "is GB"):
+            settings(wifi_country="UK").validate()
+        settings(wifi_password="é" * 31).validate()                 # 62 bytes
+        settings(ssh=False, ssh_password_auth=False).validate()     # SSH off: nothing to lock down
+        settings(ssh_password_auth=False, ssh_keys=["ssh-ed25519 AAAAkey me@pc"]).validate()
+        settings(wifi_country="GB", timezone="Europe/London", keyboard="gb").validate()
+
+    @unittest.skipUnless(g._known_timezones(), "this computer has no time zone database")
+    def test_timezone_must_exist(self):
+        settings(timezone="America/Argentina/Buenos_Aires").validate()
+        settings(timezone="Etc/GMT+5").validate()
+        for tz in ("europe/london", "Asia/Bangalore", "Mars/Olympus"):
+            with self.subTest(tz=tz):
+                with self.assertRaises(g.ImagerError):
+                    settings(timezone=tz).validate()
+
     def test_payload_size_limit(self):
         keys = [f"ssh-ed25519 {'A' * 400} key{i}" for i in range(30)]
         with self.assertRaises(g.ImagerError):
@@ -379,6 +413,80 @@ class ImageTest(unittest.TestCase):
             g.write_image(src, g.FileTarget(out), settings(password=""))
         self.assertFalse(out.exists())
 
+    def test_truncated_image_is_refused_before_the_partition_table(self):
+        original = synthetic_image()
+        cut = original[: len(original) - ROOT_SECTORS * SECTOR // 2]       # half the root partition missing
+        src = self.write("cut.img", cut)
+        target = RecordingTarget(self.tmp / "cut-out.img")
+        with self.assertRaisesRegex(g.ImagerError, "incomplete"):
+            g.write_image(src, target, settings())
+        self.assertNotIn(("write", 0, g.HOLD_BACK), target.ops, "no partition table over a half-written card")
+
+    def test_cancel_before_writing_never_opens_the_target(self):
+        opened = []
+
+        class Watch(g.FileTarget):
+            def open(self):
+                opened.append(True)
+                super().open()
+
+        src = self.write("cw.img", synthetic_image())
+        cancel = threading.Event()
+
+        def cancel_while_checking(stage, fraction):
+            if stage == "Checking the image":
+                cancel.set()
+
+        with self.assertRaisesRegex(g.ImagerError, "Nothing was written"):
+            g.write_image(src, Watch(self.tmp / "cw-out.img"), settings(), cancel=cancel, progress=cancel_while_checking)
+        self.assertEqual(opened, [])
+
+    def test_customised_image_is_named_as_such(self):
+        src = self.write("orig.img", synthetic_image())
+        out = self.tmp / "custom.img"
+        g.write_image(src, g.FileTarget(out), settings())
+        with self.assertRaisesRegex(g.ImagerError, "already customised"):
+            g.scan_image(out)
+
+    def test_zip_with_several_images_is_refused(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("image_2026-10-25-genesis-os-desktop.img.xz", lzma.compress(synthetic_image(), preset=0))
+            zf.writestr("my.img", synthetic_image())
+        path = self.tmp / "two.zip"
+        path.write_bytes(buf.getvalue())
+        with self.assertRaisesRegex(g.ImagerError, "several images"):
+            g.scan_image(path)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_output_file_is_private(self):
+        src = self.write("p.img", synthetic_image())
+        out = self.tmp / "private.img"
+        out.write_bytes(b"old")
+        os.chmod(out, 0o644)
+        g.write_image(src, g.FileTarget(out), settings())
+        self.assertEqual(os.stat(out).st_mode & 0o777, 0o600)
+
+    def test_output_must_not_be_the_image_or_a_device(self):
+        src = self.write("same.img", synthetic_image())
+        with self.assertRaisesRegex(g.ImagerError, "the image itself"):
+            g.check_output_path(src, src)
+        link = self.tmp / "hardlink.img"
+        try:
+            os.link(src, link)
+        except OSError:
+            link = None
+        if link:
+            with self.assertRaisesRegex(g.ImagerError, "the image itself"):
+                g.check_output_path(link, src)
+        with self.assertRaisesRegex(g.ImagerError, "--device"):
+            g.check_output_path(Path(r"\\.\PhysicalDrive0"), src)
+        if os.path.exists("/dev/null"):
+            with self.assertRaisesRegex(g.ImagerError, "not a regular file"):
+                g.check_output_path(Path("/dev/null"), src)
+        g.check_output_path(self.tmp / "new.img", src)              # a new file is fine
+        self.assertEqual(src.stat().st_size, len(synthetic_image()))
+
     def test_cli_output(self):
         original = synthetic_image()
         src = self.write("cli.img.xz", original)
@@ -410,12 +518,134 @@ class ImageTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("User name", err.getvalue())
 
+    def test_cli_reads_both_secrets_from_standard_input(self):
+        stdin = io.StringIO("account pw\nwifi passphrase 1\n")
+        with mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            rc = g.cli(["--image", "unused.img", "--print-payload", "--password-file", "-", "--wifi-password-file", "-"])
+        self.assertEqual(rc, 0)
+        fields = parse_payload(out.getvalue().encode())
+        self.assertEqual(base64.b64decode(fields["WIFI_PSK_B64"]).decode(), "wifi passphrase 1")
+        salt = fields["PASSWORD_HASH"].split("$")[3]
+        self.assertEqual(g.sha512_crypt("account pw", salt, 100000), fields["PASSWORD_HASH"])
+
+    def test_cli_reports_a_damaged_archive(self):
+        good = lzma.compress(synthetic_image(), preset=0)
+        bad = self.tmp / "bad.img.xz"
+        bad.write_bytes(good[:200] + b"\0" * 64 + good[264:])
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err, mock.patch("sys.stdout", new_callable=io.StringIO):
+            rc = g.cli(["--image", str(bad), "--output", str(self.tmp / "o.img"), "--password", "pw1234", "--wifi-ssid", ""])
+        self.assertEqual(rc, 1)
+        self.assertIn("Error", err.getvalue())
+
     def test_worker_round_trip(self):
         # what the window hands the privileged helper: settings with only the hash
         s = settings()
         job_settings = {**g.asdict(s), "password": "", "password_hash": g.sha512_crypt(s.password)}
         clone = g.Settings(**json.loads(json.dumps(job_settings)))
         self.assertEqual(parse_payload(clone.payload())["PASSWORD_HASH"], job_settings["password_hash"])
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux device path")
+class LinuxDeviceTargetTest(unittest.TestCase):
+    """DeviceTarget on Linux, with a regular file standing in for the card."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="genesis-dev-test-"))
+        self.card = self.tmp / "card.bin"
+        old = bytearray(synthetic_image())          # a card that held an earlier image
+        self.card.write_bytes(bytes(old) + b"\0" * (4 * 1024 * 1024))
+        self.dev = g.Device(str(self.card), self.card.stat().st_size, "Test card", True, False, serial="S1")
+        self.src = self.tmp / "new.img"
+        self.src.write_bytes(synthetic_image())
+        self.patches = [mock.patch("platform.system", return_value="Linux"),
+                        mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "{}", "")),
+                        mock.patch.object(g, "list_devices", return_value=[self.dev])]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_writes_verify_and_drop_the_cache(self):
+        with mock.patch("os.posix_fadvise", create=True) as fadvise:
+            res = g.write_image(self.src, g.DeviceTarget(self.dev), settings())
+        self.assertTrue(res.verified)
+        self.assertGreaterEqual(fadvise.call_count, 2, "the cache is dropped before each read-back")
+        self.assertEqual(self.card.read_bytes()[:SECTOR], synthetic_image()[:SECTOR])
+
+    def test_old_partition_table_is_gone_when_a_write_stops(self):
+        cancel = threading.Event()
+
+        def stop_mid_write(stage, fraction):
+            if stage == "Writing":
+                cancel.set()
+
+        with self.assertRaisesRegex(g.ImagerError, "Cancelled"):
+            g.write_image(self.src, g.DeviceTarget(self.dev), settings(), cancel=cancel, progress=stop_mid_write)
+        self.assertNotEqual(self.card.read_bytes()[510:512], b"\x55\xaa")
+
+    def test_a_swapped_disk_is_not_written(self):
+        other = g.Device(self.dev.path, self.dev.size, "Backup HDD", False, False, serial="OTHER")
+        before = self.card.read_bytes()
+        with mock.patch.object(g, "list_devices", return_value=[other]):
+            with self.assertRaisesRegex(g.ImagerError, "changed"):
+                g.write_image(self.src, g.DeviceTarget(self.dev), settings())
+        with mock.patch.object(g, "list_devices", return_value=[]):
+            with self.assertRaisesRegex(g.ImagerError, "not there"):
+                g.write_image(self.src, g.DeviceTarget(self.dev), settings())
+        self.assertEqual(self.card.read_bytes(), before)
+
+
+class PrivilegedLaunchTest(unittest.TestCase):
+    class FakeProc:
+        def __init__(self, args, stdin=None, **kw):
+            self.args = args
+            self.stdin = io.BytesIO() if stdin is not None else None
+            if self.stdin is not None:
+                self.stdin.close = lambda: None
+            PrivilegedLaunchTest.launched.append(self)
+
+        def poll(self):
+            return 1
+
+    launched: list = []
+
+    def setUp(self):
+        PrivilegedLaunchTest.launched = []
+        self.job = {"image": "x.img", "device": {}, "settings": {"wifi_password": "secret-psk-123"}}
+
+    def test_linux_sends_the_job_on_standard_input(self):
+        made = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def mkdtemp(**kw):
+            made.append(real_mkdtemp(**kw))
+            return made[-1]
+
+        with mock.patch("platform.system", return_value="Linux"), mock.patch("shutil.which", return_value="/usr/bin/pkexec"), \
+                mock.patch("tempfile.mkdtemp", side_effect=mkdtemp), mock.patch("subprocess.Popen", self.FakeProc), \
+                mock.patch("time.sleep"):
+            with self.assertRaisesRegex(g.ImagerError, "not authorised"):
+                g.run_privileged_worker(self.job, lambda s, f: None, threading.Event())
+        proc = self.launched[0]
+        self.assertEqual(proc.args[0], "pkexec")
+        self.assertEqual(proc.args[proc.args.index("--worker") + 1], "-")
+        self.assertEqual(json.loads(proc.stdin.getvalue()), self.job)
+        self.assertFalse(os.path.exists(made[0]), "the work directory is removed")
+
+    def test_macos_passes_the_command_as_an_argument(self):
+        with mock.patch("platform.system", return_value="Darwin"), mock.patch("subprocess.Popen", self.FakeProc), \
+                mock.patch.object(g, "_self_command", return_value=["/Users/ana/Ana's \"tools\"\\x/Genesis Imager"]), \
+                mock.patch("time.sleep"):
+            with self.assertRaisesRegex(g.ImagerError, "not authorised"):
+                g.run_privileged_worker(self.job, lambda s, f: None, threading.Event())
+        args = self.launched[0].args
+        self.assertEqual(args[:7], ["osascript", "-e", "on run argv", "-e",
+                                    "do shell script (item 1 of argv) with administrator privileges", "-e", "end run"])
+        self.assertEqual(len(args), 8)
+        self.assertIn("'/Users/ana/Ana'\\''s \"tools\"\\x/Genesis Imager' '--worker'", args[7])
 
 
 class DeviceListTest(unittest.TestCase):
@@ -466,23 +696,50 @@ class DeviceListTest(unittest.TestCase):
         with mock.patch("platform.system", return_value="Windows"), self.run_mock({"powershell": json.dumps(disks[1])}):
             self.assertEqual(len(g.list_devices()), 1)
 
-    def test_macos(self):
-        listing = {"AllDisksAndPartitions": [
-            {"DeviceIdentifier": "disk0", "Partitions": [{"MountPoint": "/"}]},
-            {"DeviceIdentifier": "disk4", "Partitions": [{"MountPoint": "/Volumes/bootfs"}]},
-        ]}
-        infos = {
-            "disk0": {"Internal": True, "Removable": False, "TotalSize": 500277790720, "MediaName": "APPLE SSD"},
-            "disk4": {"Internal": False, "Removable": True, "TotalSize": 31914983424, "MediaName": "SD Card Reader"},
-        }
+    def macos(self, infos, listing, show_all):
         outputs = {
             "diskutil list -plist": plistlib.dumps(listing),
-            "diskutil info -plist": lambda cmd: plistlib.dumps(infos[cmd[3]]),
+            "diskutil info -plist": lambda cmd: plistlib.dumps(infos.get(cmd[3], {})),
         }
         with mock.patch("platform.system", return_value="Darwin"), self.run_mock(outputs):
-            devices = g.list_devices(show_all=True)
-        self.assertEqual([d.path for d in devices], ["/dev/disk4"])
+            return g.list_devices(show_all=show_all)
+
+    # an Apple silicon Mac as diskutil describes it: "/" lives on the synthesized APFS disk3,
+    # whose physical store is disk0s2; the physical listing has no MountPoint on disk0 at all
+    APFS_LISTING = {"AllDisksAndPartitions": [
+        {"DeviceIdentifier": "disk0", "Partitions": [{"DeviceIdentifier": "disk0s1", "Content": "Apple_APFS_ISC"},
+                                                     {"DeviceIdentifier": "disk0s2", "Content": "Apple_APFS"},
+                                                     {"DeviceIdentifier": "disk0s3", "Content": "Apple_APFS_Recovery"}]},
+        {"DeviceIdentifier": "disk4", "Partitions": [{"MountPoint": "/Volumes/bootfs"}]},
+        {"DeviceIdentifier": "disk5", "Partitions": []},
+    ]}
+    APFS_INFOS = {
+        "/": {"ParentWholeDisk": "disk3", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}]},
+        "/System/Volumes/Data": {"ParentWholeDisk": "disk3"},
+        "disk3": {"APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}]},
+        "disk0": {"Internal": True, "RemovableMedia": False, "TotalSize": 500277790720, "MediaName": "APPLE SSD AP0512Q"},
+        "disk4": {"Internal": True, "RemovableMedia": True, "Removable": True, "TotalSize": 31914983424,
+                  "MediaName": "Built In SDXC Reader"},
+        "disk5": {"Internal": False, "Removable": False, "TotalSize": 2000398934016, "MediaName": "USB SSD"},
+    }
+
+    def test_macos_boot_disk_is_never_offered(self):
+        for show_all in (False, True):
+            with self.subTest(show_all=show_all):
+                devices = self.macos(self.APFS_INFOS, self.APFS_LISTING, show_all)
+                self.assertNotIn("/dev/disk0", [d.path for d in devices])
+        everything = self.macos(self.APFS_INFOS, self.APFS_LISTING, True)
+        self.assertEqual([d.path for d in everything], ["/dev/disk4", "/dev/disk5"])
+
+    def test_macos_built_in_sd_slot_is_listed_by_default(self):
+        devices = self.macos(self.APFS_INFOS, self.APFS_LISTING, False)
+        self.assertIn("/dev/disk4", [d.path for d in devices])
         self.assertEqual(devices[0].ident, "disk4")
+
+    def test_macos_boot_disk_hidden_even_if_detection_fails(self):
+        infos = {k: v for k, v in self.APFS_INFOS.items() if k.startswith("disk") and k != "disk3"}
+        devices = self.macos(infos, self.APFS_LISTING, True)
+        self.assertNotIn("/dev/disk0", [d.path for d in devices])
 
 
 class MiscTest(unittest.TestCase):
