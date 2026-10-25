@@ -17,6 +17,8 @@ gi.require_version("GtkLayerShell", "0.1")
 
 from gi.repository import Gdk, GLib, Gtk, GtkLayerShell  # noqa: E402
 
+ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+
 from .config import CACHE_DIR, Config  # noqa: E402
 from .control_center import ControlCenter  # noqa: E402
 from .ipc import ShellService  # noqa: E402
@@ -41,6 +43,9 @@ log = logging.getLogger("genesis.shell")
 
 class Shell:
     def __init__(self) -> None:
+        theme = Gtk.IconTheme.get_default()
+        if theme is not None and os.path.isdir(ICON_DIR):
+            theme.append_search_path(ICON_DIR)  # genesis-control-center-symbolic and friends
         self.exit_code = 0
         self.config = Config()
         self.theme = Theme(self.config)

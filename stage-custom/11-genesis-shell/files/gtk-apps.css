@@ -8,10 +8,26 @@
 @define-color genesis_edge rgba(255, 255, 255, 0.09);
 @define-color genesis_text #e9eff6;
 
+@define-color theme_bg_color #151d2a;
+@define-color theme_base_color #0f1521;
+@define-color theme_fg_color @genesis_text;
+@define-color theme_text_color @genesis_text;
+@define-color theme_unfocused_bg_color #121a26;
+@define-color theme_unfocused_base_color #0f1521;
+@define-color borders #2a3850;
+@define-color unfocused_borders #1c2636;
+
 @define-color theme_selected_bg_color @genesis_accent;
 @define-color theme_selected_fg_color #ffffff;
 @define-color accent_bg_color @genesis_accent;
 @define-color accent_color @genesis_accent;
+
+menubar, .menubar {
+    background-color: #121a26;
+    color: @genesis_text;
+    border-bottom: 1px solid #2a3850;
+    box-shadow: none;
+}
 
 headerbar, .titlebar {
     border-radius: 12px 12px 0 0;

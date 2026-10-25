@@ -5,8 +5,8 @@ border.width: 1
 window.titlebar.padding.height: 7
 window.titlebar.padding.width: 8
 
-window.active.border.color: #2a3850
-window.inactive.border.color: #141d2a
+window.active.border.color: #3a4a66
+window.inactive.border.color: #1c2636
 window.active.title.bg.color: #121a26
 window.inactive.title.bg.color: #0f1521
 window.active.label.text.color: #e9eff6

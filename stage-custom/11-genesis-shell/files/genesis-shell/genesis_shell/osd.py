@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import cairo
 from gi.repository import GLib, Gtk, GtkLayerShell
 
 from .util import add_class, icon_image, label, make_layer_window
 from .widgets import Glass
+
+OSD_SHADOW_BOTTOM = 16
+OSD_LAYER_MARGIN = 72 - OSD_SHADOW_BOTTOM  # the pill itself stays 72px above the screen edge
 
 
 class Osd:
@@ -13,7 +17,7 @@ class Osd:
         self.shell = shell
         self.window = make_layer_window(
             namespace="genesis-osd", layer=GtkLayerShell.Layer.OVERLAY, anchors=(GtkLayerShell.Edge.BOTTOM,),
-            margins={GtkLayerShell.Edge.BOTTOM: 72}, exclusive=False, keyboard=GtkLayerShell.KeyboardMode.NONE,
+            margins={GtkLayerShell.Edge.BOTTOM: OSD_LAYER_MARGIN}, exclusive=False, keyboard=GtkLayerShell.KeyboardMode.NONE,
         )
         self.box = Glass(self._blur, self._origin, radius=999, spacing=12)  # rounded_rect clamps 999 to h/2: a pill
         add_class(self.box, "osd")
@@ -29,7 +33,17 @@ class Osd:
         self.box.pack_start(self.icon, False, False, 0)
         self.box.pack_start(self.level, True, True, 0)
         self.box.pack_start(self.text, False, False, 0)
-        self.window.add(self.box)
+        holder = Gtk.Box()  # transparent room for the pill's drop shadow
+        holder.set_margin_start(16)
+        holder.set_margin_end(16)
+        holder.set_margin_top(10)
+        holder.set_margin_bottom(OSD_SHADOW_BOTTOM)
+        holder.pack_start(self.box, True, True, 0)
+        self.window.add(holder)
+        try:  # the OSD never takes input: clicks go to whatever is below it
+            self.window.input_shape_combine_region(cairo.Region())
+        except (AttributeError, TypeError):
+            pass
         self._hide_source = 0
         self._monitor = None
 
@@ -40,7 +54,7 @@ class Osd:
     def _origin(self) -> tuple[int, int]:
         geo = self._monitor.get_geometry()
         w, h = self.window.get_allocated_width(), self.window.get_allocated_height()
-        return ((geo.width - w) // 2, geo.height - 72 - h)
+        return ((geo.width - w) // 2, geo.height - OSD_LAYER_MARGIN - h)
 
     def show_level(self, icon: str, fraction: float, text: str | None = None) -> None:
         fraction = max(0.0, min(1.0, fraction))

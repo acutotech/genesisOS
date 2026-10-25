@@ -39,7 +39,7 @@ class Theme:
             "glass_strong": f"rgba(16, 23, 34, {min(0.98, opacity + 0.16):.2f})",
             "glass_light": "rgba(255, 255, 255, 0.06)",
             "edge": "rgba(255, 255, 255, 0.09)",
-            "edge_outer": "rgba(0, 0, 0, 0.45)",
+            "edge_outer": "rgba(0, 0, 0, 0.38)",
             "highlight": "rgba(255, 255, 255, 0.16)",
             "text": "#e9eff6",
             "text_dim": "rgba(233, 239, 246, 0.62)",

@@ -212,35 +212,44 @@ class WallpaperManager:
             return None
         return (self._current, self.mode(), geo.width, geo.height)
 
-    def _blur_file(self, key: tuple) -> Path:
+    def _blur_file(self, key: tuple, deep: bool = False) -> Path:
         path, mode, w, h = key
         try:
             stamp = str(int(os.stat(path).st_mtime))
         except OSError:
             stamp = "0"
-        digest = hashlib.sha1(f"{path}|{stamp}|{mode}|{w}x{h}|v3".encode()).hexdigest()[:16]
-        return CACHE_DIR / f"blur-{digest}.png"
+        digest = hashlib.sha1(f"{path}|{stamp}|{mode}|{w}x{h}|v4".encode()).hexdigest()[:16]
+        return CACHE_DIR / f"blur-{digest}{'-deep' if deep else ''}.png"
 
-    def blurred_surface(self, monitor: Gdk.Monitor) -> cairo.ImageSurface | None:
+    def blurred_surface(self, monitor: Gdk.Monitor, deep: bool = False) -> cairo.ImageSurface | None:
+        """Blurred, darkened wallpaper for `monitor`.
+
+        The light copy sits under glass surfaces (detail and colour show through);
+        the deep copy backs full-screen overlays (launcher, power dialog), where
+        no shape of the wallpaper should survive. Falls back to the light copy.
+        """
         key = self._blur_key(monitor)
         if key is None:
             return None
-        if key in self._blur:
-            return self._blur[key]
-        file = self._blur_file(key)
+        cache_key = (key, deep)
+        if cache_key in self._blur:
+            return self._blur[cache_key]
+        file = self._blur_file(key, deep)
         if file.is_file():
             try:
                 surface = cairo.ImageSurface.create_from_png(str(file))
-                self._blur[key] = surface
+                self._blur[cache_key] = surface
                 return surface
             except Exception as exc:  # noqa: BLE001
                 log.warning("bad blur cache %s: %s", file, exc)
+        if deep and self._blur_file(key).is_file():
+            return self.blurred_surface(monitor)
         self.ensure_blur_async(monitor)
         return None
 
     def ensure_blur_async(self, monitor: Gdk.Monitor) -> None:
         key = self._blur_key(monitor)
-        if key is None or key in self._blur or key in self._pending_blur or key in self._failed_blur:
+        if key is None or (key, False) in self._blur or key in self._pending_blur or key in self._failed_blur:
             return
         file = self._blur_file(key)
         if file.is_file():
@@ -278,6 +287,14 @@ class WallpaperManager:
             scale = max(w / sw, h / sh)
             cw, ch = max(w, math.ceil(sw * scale)), max(h, math.ceil(sh * scale))
             img = img.resize((cw, ch), Image.BILINEAR).crop(((cw - w) // 2, (ch - h) // 2, (cw - w) // 2 + w, (ch - h) // 2 + h))
+            # deep copy first: the light file is the "done" marker ensure_blur_async checks
+            deep = img.resize((max(1, w // 8), max(1, h // 8)), Image.BILINEAR).filter(ImageFilter.GaussianBlur(6))
+            deep = deep.resize((w, h), Image.BICUBIC)
+            deep = ImageEnhance.Brightness(ImageEnhance.Color(deep).enhance(1.3)).enhance(0.7)
+            deep_file = file.with_name(file.stem + "-deep.png")
+            deep_tmp = deep_file.with_suffix(".tmp.png")
+            deep.save(deep_tmp, format="PNG", compress_level=3)
+            deep_tmp.replace(deep_file)
             small = img.resize((max(1, w // 4), max(1, h // 4)), Image.BILINEAR).filter(ImageFilter.GaussianBlur(5))
             big = small.resize((w, h), Image.BICUBIC)
             big = ImageEnhance.Color(big).enhance(1.25)

@@ -135,7 +135,7 @@ class OverlayWindow:
         return self.shell.wallpaper.blurred_surface(self.monitor)
 
     def _draw_blur(self, _widget, cr) -> bool:
-        surface = self.blur()
+        surface = None if self.monitor is None else self.shell.wallpaper.blurred_surface(self.monitor, deep=True)
         if surface is not None:
             cr.save()
             cr.set_source_surface(surface, 0, 0)

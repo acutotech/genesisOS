@@ -94,7 +94,8 @@ class ControlCenter(OverlayWindow):
         self.wifi_tile = Tile("network-wireless-symbolic", "Wi-Fi", "", self._toggle_wifi, lambda: self._show_page("wifi"))
         self.bt_tile = Tile("bluetooth-active-symbolic", "Bluetooth", "", self._toggle_bluetooth, lambda: self._show_page("bluetooth"))
         theme = Gtk.IconTheme.get_default()
-        dnd_off = "preferences-system-notifications-symbolic" if theme.has_icon("preferences-system-notifications-symbolic") else "notifications-disabled-symbolic"
+        # a bell when notifications are on, the bell-slash when Do Not Disturb is on (same family as the empty state)
+        dnd_off = next((n for n in ("notification-symbolic", "preferences-system-notifications-symbolic") if theme.has_icon(n)), "notifications-disabled-symbolic")
         self._dnd_icons = (dnd_off, "notifications-disabled-symbolic")
         self.dnd_tile = Tile(dnd_off, "Do Not Disturb", "", self._toggle_dnd)
         self.night_tile = Tile("weather-clear-night-symbolic", "Night Light", "", self._toggle_night)

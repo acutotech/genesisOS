@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import time
 
+import cairo
 from gi.repository import Gdk, GLib, Gtk, GtkLayerShell
 
-from .util import add_class, flat_button, gicon_image, icon_image, label, launch_app, make_layer_window, set_class
+from .util import add_class, brand_image, flat_button, gicon_image, icon_image, label, launch_app, make_layer_window, set_class
 from .widgets import Glass
 
 log = logging.getLogger("genesis.panel")
@@ -178,22 +179,35 @@ class Panel:
         self.margin = 8 if self.floating else 0
         self.side_margin = 12 if self.floating else 0
         margins = {side: self.margin, GtkLayerShell.Edge.LEFT: self.side_margin, GtkLayerShell.Edge.RIGHT: self.side_margin}
+        # A floating bar gets transparent room for its drop shadow; the exclusive
+        # zone stays the bar's own height and input is limited to the bar, so the
+        # shadow strip never covers or eats clicks meant for windows below it.
+        self.shadow_room = 14 if self.floating else 0
         self.window = make_layer_window(
             namespace="genesis-panel", layer=GtkLayerShell.Layer.TOP,
             anchors=(side, GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT),
-            margins=margins, exclusive=True, keyboard=GtkLayerShell.KeyboardMode.NONE, monitor=monitor,
+            margins=margins, exclusive=self.height if self.floating else True,
+            keyboard=GtkLayerShell.KeyboardMode.NONE, monitor=monitor,
         )
         self.box = Glass(self._blur, self._origin, radius=16 if self.floating else 0, orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         add_class(self.box, "panel")
         if not self.floating:
             add_class(self.box, "docked")
         self.box.set_size_request(-1, self.height)
-        self.window.add(self.box)
+        holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        if self.shadow_room:
+            if self.position == "bottom":
+                holder.set_margin_top(self.shadow_room)
+            else:
+                holder.set_margin_bottom(self.shadow_room)
+        holder.pack_start(self.box, False, False, 0)
+        self.window.add(holder)
+        self.box.connect("size-allocate", self._limit_input)
 
         # left: logo + dock
         left = Gtk.Box(spacing=2)
         left.set_valign(Gtk.Align.CENTER)
-        logo = flat_button(icon_image("genesis-os", 24), css=("panel-button", "logo-button"), tooltip="Applications  (Super)")
+        logo = flat_button(brand_image("genesis-os", 26), css=("panel-button", "logo-button"), tooltip="Applications  (Super)")
         logo.connect("clicked", lambda _b: shell.toggle_launcher(monitor))
         left.pack_start(logo, False, False, 0)
         sep = Gtk.Box()
@@ -224,8 +238,7 @@ class Panel:
         self.vol_icon = icon_image("audio-volume-high-symbolic", 16)
         self.bat_icon = icon_image("battery-symbolic", 16)
         self.bat_icon.set_no_show_all(True)
-        self.menu_icon = icon_image("open-menu-symbolic", 16)
-        self.menu_icon.set_no_show_all(True)
+        self.menu_icon = icon_image("genesis-control-center-symbolic", 16)  # always shown: the pill opens the control center
         for w in (self.badge, self.net_icon, self.bt_icon, self.vol_icon, self.bat_icon, self.menu_icon):
             icons.pack_start(w, False, False, 0)
         self.status_button = flat_button(icons, css=("panel-button", "status-pill"), tooltip="Control center")
@@ -244,8 +257,15 @@ class Panel:
     # -- geometry for the glass backdrop ------------------------------------------------
     def _origin(self) -> tuple[int, int]:
         geo = self.monitor.get_geometry()
-        y = self.margin if self.position == "top" else geo.height - self.margin - self.box.get_allocated_height()
+        y = self.margin if self.position == "top" else geo.height - self.margin - self.window.get_allocated_height()
         return (self.side_margin, y)
+
+    def _limit_input(self, _widget, alloc) -> None:
+        try:
+            region = cairo.Region(cairo.RectangleInt(alloc.x, alloc.y, alloc.width, alloc.height))
+            self.window.input_shape_combine_region(region)
+        except (AttributeError, TypeError) as exc:  # pycairo without Region support
+            log.debug("cannot limit panel input region: %s", exc)
 
     def _blur(self):
         return self.shell.wallpaper.blurred_surface(self.monitor)
@@ -288,7 +308,6 @@ class Panel:
         self.badge.set_visible(unread > 0)
         self.badge.set_text(str(unread) if unread < 100 else "99+")
         # never an empty pill: fall back to a menu glyph when no status icon is shown
-        self.menu_icon.set_visible(not any(w.get_visible() for w in (self.net_icon, self.bt_icon, self.vol_icon, self.bat_icon)))
 
     def refresh_dock(self) -> None:
         self.dock.refresh()

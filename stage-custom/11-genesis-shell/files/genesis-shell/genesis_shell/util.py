@@ -14,8 +14,9 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GtkLayerShell", "0.1")
+gi.require_version("GdkPixbuf", "2.0")
 
-from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell, Pango  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, GtkLayerShell, Pango  # noqa: E402
 
 log = logging.getLogger("genesis.util")
 
@@ -115,11 +116,34 @@ def icon_image(name: str, size: int) -> Gtk.Image:
 
 
 def gicon_image(gicon: Gio.Icon | None, size: int, fallback: str = "application-x-executable") -> Gtk.Image:
+    """Image for an application (full-colour) icon at `size` pixels.
+
+    GTK would scale the nearest raster up (a 16px PNG at 24px looks stepped), so
+    coloured icons are loaded at least twice as large and scaled down. Symbolic
+    icons keep the normal path so they still follow the CSS colour.
+    """
     if gicon is None:
         return icon_image(fallback, size)
+    try:
+        info = Gtk.IconTheme.get_default().lookup_by_gicon(gicon, max(64, size * 2), Gtk.IconLookupFlags.FORCE_SIZE)
+        if info is not None and not info.is_symbolic():
+            pixbuf = info.load_icon()
+            if pixbuf is not None:
+                w, h = pixbuf.get_width(), pixbuf.get_height()
+                if (w, h) != (size, size) and w > 0 and h > 0:
+                    k = size / max(w, h)
+                    pixbuf = pixbuf.scale_simple(max(1, round(w * k)), max(1, round(h * k)), GdkPixbuf.InterpType.HYPER)
+                return Gtk.Image.new_from_pixbuf(pixbuf)
+    except (GLib.Error, TypeError, ValueError):
+        pass
     img = Gtk.Image.new_from_gicon(gicon, Gtk.IconSize.BUTTON)
     img.set_pixel_size(size)
     return img
+
+
+def brand_image(name: str, size: int) -> Gtk.Image:
+    """A named full-colour icon (the Genesis logo) rendered crisply at `size`."""
+    return gicon_image(Gio.ThemedIcon.new(name), size, fallback=name)
 
 
 def label(text: str = "", *, css: Sequence[str] = (), xalign: float | None = None, ellipsize: bool = False, max_chars: int = 0) -> Gtk.Label:
