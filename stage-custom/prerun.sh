@@ -14,6 +14,12 @@ if [ "${GENESIS_PRUNE_WORK}" = "1" ] && [ -n "${WORK_DIR:-}" ]; then
 	self="$(realpath "${ROOTFS_DIR}")"
 	# shellcheck disable=SC2086  # STAGE_LIST is a space-separated list (pi-gen convention)
 	for stage_dir in ${STAGE_LIST:-}; do
+		# build-local.sh lists the upstream stages by relative name (stage0 ...),
+		# pi-gen resolves them against its own directory; this script runs from ours
+		case "${stage_dir}" in
+			/*) ;;
+			*) stage_dir="${BASE_DIR:-.}/${stage_dir}" ;;
+		esac
 		[ -d "${stage_dir}" ] || continue
 		rootfs="${WORK_DIR}/$(basename "${stage_dir}")/rootfs"
 		[ -d "${rootfs}" ] || continue

@@ -250,8 +250,8 @@ class Panel:
 
         self.window.show_all()
         self._last_clock = ""
+        self._clock_source = 0
         self._tick()
-        self._clock_source = GLib.timeout_add(1000, self._tick)
         self.update_status()
 
     # -- geometry for the glass backdrop ------------------------------------------------
@@ -283,7 +283,13 @@ class Panel:
         if text != self._last_clock:
             self._last_clock = text
             self.clock_label.set_text(text)
-        return True
+        # next wake-up: the next second when seconds are shown, otherwise the next minute
+        if "%S" in fmt or "%T" in fmt or "%r" in fmt:
+            delay_ms = 1000 - int(time.time() * 1000) % 1000
+        else:
+            delay_ms = 60000 - int(time.time() * 1000) % 60000
+        self._clock_source = GLib.timeout_add(delay_ms + 20, self._tick)
+        return False
 
     def update_status(self) -> None:
         s = self.shell

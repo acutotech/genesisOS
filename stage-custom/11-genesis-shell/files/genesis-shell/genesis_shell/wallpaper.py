@@ -132,7 +132,8 @@ class WallpaperManager:
         return True
 
     def _on_config(self) -> None:
-        self._apply()
+        if "wallpaper" in getattr(self.config, "changed", {"wallpaper"}):
+            self._apply()
 
     def _apply(self) -> None:
         new = self.path()
@@ -145,6 +146,22 @@ class WallpaperManager:
             win.redraw()
         for mon in list(self.windows):
             self.ensure_blur_async(mon)
+        self._prune_blur_cache()
+
+    def _prune_blur_cache(self) -> None:
+        """Delete blurred copies of wallpapers that are no longer in use."""
+        keep: set[str] = set()
+        for mon in list(self.windows):
+            key = self._blur_key(mon)
+            if key is not None:
+                keep.add(self._blur_file(key).name)
+                keep.add(self._blur_file(key, deep=True).name)
+        try:
+            for file in CACHE_DIR.glob("blur-*.png"):
+                if file.name not in keep:
+                    file.unlink(missing_ok=True)
+        except OSError as exc:
+            log.debug("blur cache cleanup: %s", exc)
         self.shell.redraw_glass()
 
     # -- pixel data --------------------------------------------------------------------

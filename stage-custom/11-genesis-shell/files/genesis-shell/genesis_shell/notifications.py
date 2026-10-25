@@ -106,11 +106,15 @@ class Notification:
             if candidate.startswith("file://"):
                 candidate = candidate[7:]
             if candidate.startswith("/"):
-                try:
-                    pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(candidate, size, size, True)
-                    return Gtk.Image.new_from_pixbuf(pix)
-                except GLib.Error:
+                cache = self.__dict__.setdefault("_file_icons", {})
+                if (candidate, size) not in cache:  # a screenshot is a full-size PNG: decode it once
+                    try:
+                        cache[(candidate, size)] = GdkPixbuf.Pixbuf.new_from_file_at_scale(candidate, size, size, True)
+                    except GLib.Error:
+                        cache[(candidate, size)] = None
+                if cache[(candidate, size)] is None:
                     continue
+                return Gtk.Image.new_from_pixbuf(cache[(candidate, size)])
             if candidate:
                 return icon_image(candidate, size)
         if self.desktop_entry:
@@ -438,8 +442,12 @@ class NotificationList(Gtk.Box):
         self.clear.set_halign(Gtk.Align.END)
         self.clear.connect("clicked", lambda _b: shell.notifications.clear_all())
         self.pack_end(self.clear, False, False, 0)
-        shell.notifications.connect(self.refresh)
+        shell.notifications.connect(self._refresh_if_shown)  # NotificationCenter.on_shown refreshes on open
         self.refresh()
+
+    def _refresh_if_shown(self) -> None:
+        if self.get_mapped():
+            self.refresh()
 
     def _on_dnd_switch(self, _switch, state) -> bool:
         if not self._syncing and bool(state) != self.shell.notifications.dnd:

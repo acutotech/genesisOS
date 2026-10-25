@@ -40,11 +40,28 @@ class AudioService(Service):
             self.available = which("pactl")
         if self.available:
             self.refresh()
-            if self._pulse is None:
-                self._poll_source = GLib.timeout_add_seconds(3, self._poll)
+        if self._pulse is None and (self.available or self._pulsectl is not None):
+            # the sound server is often not up yet when the session starts
+            self._poll_tries = 0
+            self._poll_source = GLib.timeout_add_seconds(3, self._poll)
 
     # -- state -------------------------------------------------------------------
     def _poll(self) -> bool:
+        if self._pulsectl is not None:
+            try:
+                self._pulse = self._pulsectl.Pulse("genesis-shell")
+            except Exception:  # noqa: BLE001 - still no server
+                self._pulse = None
+            if self._pulse is not None:
+                log.info("connected to the sound server; live volume updates on")
+                self.available = True
+                self._poll_source = 0
+                self._start_listener()
+                self.refresh()
+                return False
+        self._poll_tries += 1
+        if not self.available:
+            return self._poll_tries < 40  # stop asking after about two minutes
         self.refresh()
         return True
 

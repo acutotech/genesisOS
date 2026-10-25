@@ -72,6 +72,7 @@ class Config:
 
     # -- reading ---------------------------------------------------------------
     def reload(self) -> None:
+        old = {name: dict(self._parser.items(name)) for name in self._parser.sections()}
         parser = configparser.ConfigParser(interpolation=None)
         parser.read_dict(DEFAULTS)
         for path in (SYSTEM_CONF, USER_CONF):
@@ -82,6 +83,10 @@ class Config:
             except configparser.Error as exc:
                 log.warning("ignoring %s: %s", path, exc)
         self._parser = parser
+        new = {name: dict(parser.items(name)) for name in parser.sections()}
+        #: sections whose values differ from before the last reload; listeners use it
+        #: to redo only what changed (a save made by the shell itself changes nothing)
+        self.changed = {name for name in set(old) | set(new) if old.get(name) != new.get(name)}
 
     def get(self, section: str, key: str, fallback: str | None = None) -> str:
         return self._parser.get(section, key, fallback=fallback if fallback is not None else DEFAULTS.get(section, {}).get(key, ""))
@@ -143,6 +148,9 @@ class Config:
     def _reload_and_notify(self) -> bool:
         self._reload_source = 0
         self.reload()
+        if not self.changed:
+            return False
+        log.debug("configuration changed: %s", ", ".join(sorted(self.changed)))
         for callback in list(self._listeners):
             try:
                 callback()

@@ -143,13 +143,18 @@ class Shell:
                 win.queue_draw()
 
     def _on_config(self) -> None:
-        self.theme.apply()
-        self.rebuild_panels()
+        changed = getattr(self.config, "changed", {"appearance", "panel"})
+        if "appearance" in changed:
+            self.theme.apply()
+        if "panel" in changed:
+            self.rebuild_panels()  # position, height, launchers, clock format
         self.redraw_glass()
 
     def reload_theme(self) -> None:
         self.config.reload()
-        self._on_config()
+        self.theme.apply()
+        self.rebuild_panels()
+        self.redraw_glass()
 
     # -- monitors ------------------------------------------------------------------------
     def current_monitor(self) -> Gdk.Monitor | None:

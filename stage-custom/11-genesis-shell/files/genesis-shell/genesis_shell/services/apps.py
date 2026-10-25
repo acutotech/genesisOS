@@ -145,6 +145,9 @@ class AppIndex(Service):
                 log.exception("bad desktop entry %s", info.get_id())
         entries.sort(key=lambda e: e.name.casefold())
         self.entries = entries
+        self._by_stem = {e.stem.casefold(): e for e in entries}
+        self._by_class = {e.wm_class.casefold(): e for e in entries if e.wm_class}
+        self._by_exec = {e.exec_name.casefold(): e for e in entries if e.exec_name}
         log.debug("indexed %d applications", len(entries))
 
     # -- queries --------------------------------------------------------------
@@ -182,12 +185,10 @@ class AppIndex(Service):
         if "." in app_id:  # org.gnome.Nautilus -> nautilus
             candidates.append(app_id.rsplit(".", 1)[-1].casefold())
         candidates = [c for c in candidates if c]
-        by_stem = {e.stem.casefold(): e for e in self.entries}
-        by_class = {e.wm_class.casefold(): e for e in self.entries if e.wm_class}
-        by_exec = {e.exec_name.casefold(): e for e in self.entries if e.exec_name}
+        tables = (getattr(self, "_by_stem", {}), getattr(self, "_by_class", {}), getattr(self, "_by_exec", {}))
         for cand in candidates:
             c = cand.casefold()
-            for table in (by_stem, by_class, by_exec):
+            for table in tables:
                 if c in table:
                     return table[c]
         # last resort: the desktop file exists but is hidden from menus
