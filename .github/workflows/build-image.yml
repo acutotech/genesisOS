@@ -156,11 +156,14 @@ jobs:
           icons=stage-custom/10-branding/files/icons/hicolor
           mkdir -p imager-build out
           cp "$icons/64x64/apps/genesis-os.png" imager-build/genesis-os.png
+          # absolute paths for PyInstaller in the platform's own form: Git Bash's
+          # $PWD (/d/a/...) means D:\d\a\... to a Windows Python, pwd -W gives D:/a/...
+          root="$(pwd -W 2> /dev/null || pwd)"
           sep=:
           [ "${RUNNER_OS}" = Windows ] && sep=';'
           common=(--noconfirm --clean --windowed --distpath imager-build/dist --workpath imager-build/work
-                  --specpath imager-build --icon "$PWD/$icons/256x256/apps/genesis-os.png"
-                  --add-data "$PWD/imager-build/genesis-os.png${sep}.")
+                  --specpath imager-build --icon "$root/$icons/256x256/apps/genesis-os.png"
+                  --add-data "$root/imager-build/genesis-os.png${sep}.")
           case "${RUNNER_OS}" in
             Windows)
               # --uac-admin: Windows asks for administrator rights when the app starts
