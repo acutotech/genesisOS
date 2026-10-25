@@ -1,0 +1,298 @@
+#!/bin/bash
+# genesis-firstboot: apply the settings Genesis Imager wrote onto the card.
+#
+# The boot partition carries a "setup area", the file genesis-setup.txt (16
+# blocks of 512 bytes). Genesis Imager overwrites it, while flashing, with lines:
+#
+#   GENESIS_SETUP=1
+#   USER=nodoai                     first user (uid 1000) is renamed to this
+#   PASSWORD_HASH=$6$...            crypt(3) hash; the password never leaves the PC
+#   HOSTNAME=nodobox
+#   WIFI_SSID_B64=...  WIFI_PSK_B64=...  WIFI_HIDDEN=0  WIFI_COUNTRY=IN
+#   TIMEZONE=Asia/Kolkata  KEYBOARD=us  KEYBOARD_VARIANT=
+#   SSH=1  SSH_PASSWORD_AUTH=1  SSH_KEYS_B64=...
+#   END=1
+#
+# This runs at every boot before Raspberry Pi's first-boot wizard (userconfig),
+# the display manager, NetworkManager and SSH. With settings present it applies
+# them, writes a summary without secrets to genesis-setup-result.txt, and puts
+# the empty placeholder back so the password hash and Wi-Fi key do not stay on
+# the card. An untouched placeholder (a card flashed with another tool) changes
+# nothing: Raspberry Pi's wizard then asks for a user as on any Pi image.
+#
+# The account itself goes through Raspberry Pi's userconf-pi, the same code its
+# wizard and userconf.txt use: rename of uid 1000, password, wizard cancelled,
+# desktop autologin kept.
+
+set -u
+R="${GENESIS_ROOT:-}"   # test harness only: an alternative root directory
+
+FW="${GENESIS_FW:-}"
+if [ -z "${FW}" ]; then
+	FW="$(/usr/lib/raspberrypi-sys-mods/get_fw_loc 2> /dev/null || true)"
+	if [ -z "${FW}" ] || [ ! -d "${R}${FW}" ]; then
+		FW=/boot/firmware
+	fi
+fi
+SETUP="${R}${FW}/genesis-setup.txt"
+RESULT="${R}${FW}/genesis-setup-result.txt"
+PLACEHOLDER="${R}/usr/share/genesis/genesis-setup-placeholder.txt"
+LOG="${R}/var/log/genesis-firstboot.log"
+
+mkdir -p "$(dirname "${LOG}")"
+log() { printf '%s genesis-firstboot: %s\n' "$(date '+%F %T')" "$*" | tee -a "${LOG}"; }
+
+RESULTS=()
+note() { RESULTS+=("$*"); log "$*"; }
+
+[ -f "${SETUP}" ] || exit 0
+if [ "$(head -c 15 "${SETUP}")" != "GENESIS_SETUP=1" ]; then
+	exit 0   # placeholder untouched: flashed without Genesis Imager
+fi
+
+declare -A CFG=()
+while IFS= read -r line || [ -n "${line}" ]; do
+	line="${line%$'\r'}"
+	case "${line}" in '' | '#'*) continue ;; esac
+	key="${line%%=*}"
+	[[ "${key}" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+	CFG["${key}"]="${line#*=}"
+done < "${SETUP}"
+
+get() { printf '%s' "${CFG[$1]:-}"; }
+b64() { [ -n "${CFG[$1]:-}" ] && printf '%s' "${CFG[$1]}" | base64 -d 2> /dev/null; }
+# GKeyFile (NetworkManager keyfile) string escaping
+kf_escape() {
+	local s="${1//\\/\\\\}"
+	s="${s//$'\t'/\\t}"
+	s="${s//$'\r'/\\r}"
+	[ "${s:0:1}" = " " ] && s="\\s${s:1}"
+	printf '%s' "${s}"
+}
+
+# Overwritten in place (no truncation): on FAT a truncated file gives its clusters
+# back, and the old contents, password hash included, would stay in free space.
+restore_placeholder() {
+	if [ -f "${PLACEHOLDER}" ]; then
+		dd if="${PLACEHOLDER}" of="${SETUP}" conv=notrunc,fsync status=none 2> /dev/null || cat "${PLACEHOLDER}" > "${SETUP}"
+	else
+		head -c "$(stat -c %s "${SETUP}")" /dev/zero | tr '\0' '#' | dd of="${SETUP}" conv=notrunc,fsync status=none 2> /dev/null
+	fi
+	sync
+}
+
+write_result() {
+	{
+		printf 'Genesis OS first-boot setup, %s\n' "$(date '+%F %T %Z')"
+		printf '%s\n' "${RESULTS[@]}"
+		printf 'Full log: /var/log/genesis-firstboot.log on the Pi.\n'
+	} > "${RESULT}"
+}
+
+if [ "$(get END)" != 1 ]; then
+	note "error: the settings are incomplete (no END=1); nothing applied, flash the card again"
+	write_result
+	restore_placeholder
+	exit 0
+fi
+log "applying settings written by $(get CREATED_BY)"
+
+# --- account -------------------------------------------------------------------------
+apply_user() {
+	local new hash first
+	new="$(get USER)"
+	hash="$(get PASSWORD_HASH)"
+	[ -n "${new}${hash}" ] || return 0
+	if ! [[ "${new}" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || [ "${new}" = root ]; then
+		note "user: '${new}' is not a valid user name; account unchanged"
+		return 1
+	fi
+	if ! [[ "${hash}" =~ ^\$(y|gy|7|6|5|2b)\$[A-Za-z0-9./\$=,+-]+$ ]]; then
+		note "user: the password hash is not a crypt(3) hash; account unchanged"
+		return 1
+	fi
+	first="$(getent passwd 1000 | cut -d: -f1)"
+	if [ -z "${first}" ]; then
+		note "user: the image has no first user (uid 1000); account unchanged"
+		return 1
+	fi
+	if [ "${new}" != "${first}" ] && getent passwd "${new}" > /dev/null; then
+		note "user: '${new}' already exists; account unchanged"
+		return 1
+	fi
+	# userconf ends with cancel-rename, which keeps desktop autologin only when this flag exists
+	if [ "$(raspi-config nonint get_autologin 2> /dev/null)" = 0 ]; then
+		mkdir -p "${R}/var/lib/userconf-pi"
+		touch "${R}/var/lib/userconf-pi/autologin"
+	fi
+	if [ -x "${R}/usr/lib/userconf-pi/userconf" ]; then
+		if ! "${R}/usr/lib/userconf-pi/userconf" "${new}" "${hash}" >> "${LOG}" 2>&1; then
+			note "user: userconf-pi failed (see the log); account may be half renamed"
+			return 1
+		fi
+		# userconf disabled the wizard service; this boot already queued it, so drop that job too
+		systemctl --no-block stop userconfig.service > /dev/null 2>&1 || true
+	else
+		if [ "${new}" != "${first}" ]; then
+			if ! { usermod -l "${new}" "${first}" && usermod -m -d "/home/${new}" "${new}" && groupmod -n "${new}" "${first}"; }; then
+				note "user: renaming ${first} to ${new} failed"
+				return 1
+			fi
+			[ -f "${R}/etc/sudoers.d/010_pi-nopasswd" ] && sed -i "s/^${first} /${new} /" "${R}/etc/sudoers.d/010_pi-nopasswd"
+		fi
+		usermod -s /bin/bash "${new}"
+		printf '%s:%s\n' "${new}" "${hash}" | chpasswd -e || { note "user: setting the password failed"; return 1; }
+		sed -i "s/^#\?autologin-user=.*/autologin-user=${new}/" "${R}/etc/lightdm/lightdm.conf" 2> /dev/null || true
+	fi
+	if [ "${new}" != "${first}" ] && [ -f "${R}/var/lib/AccountsService/users/${first}" ]; then
+		mv "${R}/var/lib/AccountsService/users/${first}" "${R}/var/lib/AccountsService/users/${new}"
+	fi
+	# the renamed account keeps the Genesis desktop as its session
+	if [ -x "${R}/usr/lib/genesis-settings/genesis-helper" ] && [ -f "${R}/etc/genesis/session" ]; then
+		SUDO_USER="${new}" "${R}/usr/lib/genesis-settings/genesis-helper" session "$(cat "${R}/etc/genesis/session")" >> "${LOG}" 2>&1 || true
+	fi
+	if [ "${new}" = "${first}" ]; then
+		note "user: ${new}, password set"
+	else
+		note "user: ${new} (renamed from ${first}), password set"
+	fi
+}
+
+# --- host name -----------------------------------------------------------------------
+apply_hostname() {
+	local name
+	name="$(get HOSTNAME)"
+	[ -n "${name}" ] || return 0
+	if ! [[ "${name}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+		note "hostname: '${name}' is not a valid host name; unchanged"
+		return 1
+	fi
+	printf '%s\n' "${name}" > "${R}/etc/hostname"
+	if grep -q '^127\.0\.1\.1' "${R}/etc/hosts" 2> /dev/null; then
+		sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${name}/" "${R}/etc/hosts"
+	else
+		printf '127.0.1.1\t%s\n' "${name}" >> "${R}/etc/hosts"
+	fi
+	hostname "${name}" 2> /dev/null || true
+	note "hostname: ${name}"
+}
+
+# --- Wi-Fi ----------------------------------------------------------------------------
+apply_wifi() {
+	local ssid psk country hidden dir file bytes
+	ssid="$(b64 WIFI_SSID_B64)"
+	psk="$(b64 WIFI_PSK_B64)"
+	country="$(get WIFI_COUNTRY)"
+	hidden="$(get WIFI_HIDDEN)"
+	if [ -n "${country}" ]; then
+		if [[ "${country}" =~ ^[A-Z]{2}$ ]] && raspi-config nonint do_wifi_country "${country}" >> "${LOG}" 2>&1; then
+			note "wifi country: ${country}"
+		else
+			note "wifi country: '${country}' not applied"
+		fi
+	fi
+	[ -n "${ssid}" ] || return 0
+	if [ "$(printf '%s' "${ssid}" | wc -c)" -gt 32 ] || [[ "${ssid}" == *$'\n'* ]]; then
+		note "wifi: the network name is not valid; not configured"
+		return 1
+	fi
+	if [ -n "${psk}" ] && ! { [ "${#psk}" -ge 8 ] && [ "${#psk}" -le 63 ] && [[ "${psk}" != *$'\n'* ]] || [[ "${psk}" =~ ^[0-9a-fA-F]{64}$ ]]; }; then
+		note "wifi: the password must be 8 to 63 characters; not configured"
+		return 1
+	fi
+	dir="${R}/etc/NetworkManager/system-connections"
+	file="${dir}/genesis-wifi.nmconnection"
+	mkdir -p "${dir}"
+	chmod 700 "${dir}"
+	# the SSID as a byte list, which the keyfile format accepts for any characters
+	bytes="$(printf '%s' "${ssid}" | od -An -tu1 -v | tr -s ' \n' ';' | sed 's/^;//')"
+	umask 077
+	{
+		printf '[connection]\nid=%s\nuuid=%s\ntype=wifi\nautoconnect=true\n\n' "$(kf_escape "${ssid}")" "$(cat /proc/sys/kernel/random/uuid)"
+		printf '[wifi]\nmode=infrastructure\nssid=%s\n' "${bytes}"
+		[ "${hidden}" = 1 ] && printf 'hidden=true\n'
+		if [ -n "${psk}" ]; then
+			printf '\n[wifi-security]\nkey-mgmt=wpa-psk\npsk=%s\n' "$(kf_escape "${psk}")"
+		fi
+		printf '\n[ipv4]\nmethod=auto\n\n[ipv6]\naddr-gen-mode=default\nmethod=auto\n'
+	} > "${file}"
+	umask 022
+	chmod 600 "${file}"
+	chown root:root "${file}" 2> /dev/null || true
+	nmcli connection reload > /dev/null 2>&1 || true   # only matters if NetworkManager already runs
+	note "wifi: ${ssid}${hidden:+$([ "${hidden}" = 1 ] && echo ' (hidden)')}"
+}
+
+# --- time zone and keyboard ---------------------------------------------------------------
+apply_locale() {
+	local tz kb variant
+	tz="$(get TIMEZONE)"
+	if [ -n "${tz}" ]; then
+		if [[ "${tz}" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] && [ -f "${R}/usr/share/zoneinfo/${tz}" ]; then
+			ln -sfn "/usr/share/zoneinfo/${tz}" "${R}/etc/localtime"
+			printf '%s\n' "${tz}" > "${R}/etc/timezone"
+			note "timezone: ${tz}"
+		else
+			note "timezone: '${tz}' is not a known time zone; unchanged"
+		fi
+	fi
+	kb="$(get KEYBOARD)"
+	variant="$(get KEYBOARD_VARIANT)"
+	if [ -n "${kb}" ]; then
+		if [[ "${kb}" =~ ^[a-z]{2,10}$ ]] && [[ "${variant}" =~ ^[a-z0-9_-]{0,24}$ ]] && [ -f "${R}/etc/default/keyboard" ]; then
+			sed -i -e "s/^XKBLAYOUT=.*/XKBLAYOUT=\"${kb}\"/" -e "s/^XKBVARIANT=.*/XKBVARIANT=\"${variant}\"/" "${R}/etc/default/keyboard"
+			note "keyboard: ${kb}${variant:+ (${variant})}"
+		else
+			note "keyboard: '${kb}' not applied"
+		fi
+	fi
+}
+
+# --- SSH -------------------------------------------------------------------------------
+apply_ssh() {
+	local user home keys
+	case "$(get SSH)" in
+		1)
+			systemctl enable ssh > /dev/null 2>&1 || true
+			systemctl --no-block start ssh > /dev/null 2>&1 || true
+			note "ssh: on"
+			;;
+		0)
+			systemctl disable ssh > /dev/null 2>&1 || true
+			systemctl --no-block stop ssh > /dev/null 2>&1 || true
+			note "ssh: off"
+			;;
+	esac
+	keys="$(b64 SSH_KEYS_B64 | grep -E '^(ssh-|ecdsa-|sk-)' || true)"
+	if [ -n "${keys}" ]; then
+		user="$(getent passwd 1000 | cut -d: -f1)"
+		home="$(getent passwd 1000 | cut -d: -f6)"
+		if [ -n "${user}" ] && [ -n "${home}" ]; then
+			mkdir -p "${R}${home}/.ssh"
+			printf '%s\n' "${keys}" >> "${R}${home}/.ssh/authorized_keys"
+			chmod 700 "${R}${home}/.ssh"
+			chmod 600 "${R}${home}/.ssh/authorized_keys"
+			chown -R "${user}:" "${R}${home}/.ssh" 2> /dev/null || chown -R 1000:1000 "${R}${home}/.ssh" 2> /dev/null || true
+			note "ssh: $(printf '%s\n' "${keys}" | wc -l) authorized key(s) for ${user}"
+		fi
+	fi
+	if [ "$(get SSH_PASSWORD_AUTH)" = 0 ]; then
+		if [ -n "${keys}" ]; then
+			mkdir -p "${R}/etc/ssh/sshd_config.d"
+			printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' > "${R}/etc/ssh/sshd_config.d/20-genesis-keys-only.conf"
+			note "ssh: key logins only"
+		else
+			note "ssh: password logins kept (no keys were given)"
+		fi
+	fi
+}
+
+apply_user || true
+apply_hostname || true
+apply_wifi || true
+apply_locale || true
+apply_ssh || true
+write_result
+restore_placeholder
+log "done"
+exit 0

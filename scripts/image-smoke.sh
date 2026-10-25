@@ -1,14 +1,30 @@
 #!/bin/bash
-# Smoke-test the desktop of a built image without a Raspberry Pi: mount the
-# image, chroot into it as the first user and run the Genesis headless preview
-# (labwc on a virtual output + Genesis Shell + screenshots). Needs root and a
-# host of the same architecture as the image (or binfmt + qemu-user-static).
+# Smoke-test a built image without a Raspberry Pi, the way a user meets it:
 #
-#   sudo scripts/image-smoke.sh pi-gen/deploy/image_*.img.xz OUTPUT_DIR
+#  1. Genesis Imager writes the image (to a file instead of a card) with a test
+#     user, a random password, a host name, Wi-Fi, time zone, keyboard and an
+#     SSH key in the setup area;
+#  2. the image is mounted and its genesis-firstboot runs inside it (chroot),
+#     then the account, password hash, autologin, wizard, network and locale
+#     settings are checked;
+#  3. the Genesis headless preview (labwc on a virtual output + Genesis Shell +
+#     screenshots) runs as the renamed first user.
+#
+# --plain skips 1 and 2 (an image built before the setup area existed). Needs
+# root and a host of the same architecture as the image (or binfmt +
+# qemu-user-static), plus python3 and openssl on the host.
+#
+#   sudo scripts/image-smoke.sh [--plain] pi-gen/deploy/image_*.img.xz OUTPUT_DIR
 set -euo pipefail
 
-IMAGE="${1:?usage: image-smoke.sh IMAGE OUTPUT_DIR}"
-OUT="${2:?usage: image-smoke.sh IMAGE OUTPUT_DIR}"
+FIRSTBOOT=1
+if [ "${1:-}" = "--plain" ]; then
+	FIRSTBOOT=0
+	shift
+fi
+IMAGE="${1:?usage: image-smoke.sh [--plain] IMAGE OUTPUT_DIR}"
+OUT="${2:?usage: image-smoke.sh [--plain] IMAGE OUTPUT_DIR}"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "${OUT}"
 OUT="$(cd "${OUT}" && pwd)"
 
@@ -32,6 +48,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
+TEST_USER=genesis-test
+TEST_HOST=genesis-smoke
+TEST_PASS="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
+TEST_PSK="smoke-test-psk-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+TEST_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGenesisSmokeTestKey00000000000000000000000 smoke@ci"
+
+if [ "${FIRSTBOOT}" = 1 ]; then
+	echo "image-smoke: writing $(basename "${IMAGE}") through Genesis Imager (user ${TEST_USER})"
+	printf '%s\n' "${TEST_KEY}" > "${WORK}/test.pub"
+	printf '%s\n' "${TEST_PASS}" | python3 "${REPO_DIR}/imager/genesis_imager.py" \
+		--image "${IMAGE}" --output "${WORK}/image.img" --password-file - \
+		--user "${TEST_USER}" --hostname "${TEST_HOST}" --wifi-ssid "Genesis Smoke" --wifi-password "${TEST_PSK}" \
+		--wifi-country IN --timezone Asia/Tokyo --keyboard gb --ssh-key-file "${WORK}/test.pub" \
+		| tr '\r' '\n' | grep -v '%$' || { echo "image-smoke: FAIL Genesis Imager could not write the image" >&2; exit 1; }
+else
 echo "image-smoke: unpacking $(basename "${IMAGE}")"
 case "${IMAGE}" in
 	*.xz) xz -dkc "${IMAGE}" > "${WORK}/image.img" ;;
@@ -41,6 +72,7 @@ case "${IMAGE}" in
 	*.img) cp --reflink=auto "${IMAGE}" "${WORK}/image.img" ;;
 	*) echo "image-smoke: unsupported image format: ${IMAGE}" >&2; exit 65 ;;
 esac
+fi
 
 LOOP="$(losetup --show -f -P "${WORK}/image.img")"
 ROOT="${WORK}/root"
@@ -68,6 +100,67 @@ if [ "${image_arch}" = "arm64" ] && [ "${host_arch}" != "aarch64" ] && [ ! -e /p
 	echo "image-smoke: SKIP (image is arm64, host is ${host_arch} without qemu-user-static binfmt)"
 	echo "skipped" > "${OUT}/result"
 	exit 0
+fi
+
+# ------------------------------------------------------------------ first boot
+first_boot() {
+	local failures=0 fw="${ROOT}/boot/firmware" shadow salt want got nm
+	check() { # description, then a command that must succeed
+		local what="$1"
+		shift
+		if "$@"; then echo "  ok    ${what}"; else echo "  FAIL  ${what}"; failures=$((failures + 1)); fi
+	}
+	# the imager found the file through the partition table, not the FAT: prove it is the file
+	check "the setup area in the boot partition holds the settings" test "$(head -c 15 "${fw}/genesis-setup.txt")" = "GENESIS_SETUP=1"
+	echo "image-smoke: running genesis-firstboot inside the image"
+	# its own UTS namespace: the script sets the host name, which must not be the runner's
+	if ! unshare --uts chroot "${ROOT}" /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+		LANG=C.UTF-8 /usr/lib/genesis/genesis-firstboot; then
+		echo "  FAIL  genesis-firstboot exited non-zero"
+		failures=$((failures + 1))
+	fi
+	cp "${fw}/genesis-setup-result.txt" "${ROOT}/var/log/genesis-firstboot.log" "${OUT}/" 2> /dev/null || true
+	echo "--- genesis-setup-result.txt ---"
+	cat "${fw}/genesis-setup-result.txt" 2> /dev/null || echo "(missing)"
+	echo "---"
+	check "uid 1000 is ${TEST_USER}" test "$(awk -F: '$3 == 1000 { print $1 }' "${ROOT}/etc/passwd")" = "${TEST_USER}"
+	check "home moved to /home/${TEST_USER}" test -d "${ROOT}/home/${TEST_USER}" -a ! -e "${ROOT}/home/nodoai"
+	check "login shell is bash" test "$(awk -F: '$3 == 1000 { print $7 }' "${ROOT}/etc/passwd")" = /bin/bash
+	check "group renamed" grep -q "^${TEST_USER}:x:1000:" "${ROOT}/etc/group"
+	check "${TEST_USER} is in sudo" grep -qE "^sudo:.*[:,]${TEST_USER}(,|$)" "${ROOT}/etc/group"
+	shadow="$(awk -F: -v u="${TEST_USER}" '$1 == u { print $2 }' "${ROOT}/etc/shadow")"
+	salt="$(printf '%s' "${shadow}" | cut -d'$' -f4)"
+	want="$(openssl passwd -6 -salt "rounds=100000\$${salt}" "${TEST_PASS}")"
+	check "the password typed into the imager opens the account" test -n "${salt}" -a "${shadow}" = "${want}"
+	check "desktop autologin as ${TEST_USER}" grep -q "^autologin-user=${TEST_USER}$" "${ROOT}/etc/lightdm/lightdm.conf"
+	check "Genesis stays the session" grep -q "^autologin-session=genesis$" "${ROOT}/etc/lightdm/lightdm.conf"
+	check "AccountsService knows ${TEST_USER}" grep -q '^Session=genesis$' "${ROOT}/var/lib/AccountsService/users/${TEST_USER}"
+	check "first-boot wizard removed" test ! -e "${ROOT}/etc/xdg/autostart/piwiz.desktop"
+	got="$(systemctl --root="${ROOT}" is-enabled userconfig.service 2> /dev/null || true)"
+	check "userconfig.service disabled (got '${got}')" test "${got}" != enabled
+	check "genesis-firstboot.service still enabled" test "$(systemctl --root="${ROOT}" is-enabled genesis-firstboot.service 2> /dev/null)" = enabled
+	check "host name ${TEST_HOST}" test "$(cat "${ROOT}/etc/hostname")" = "${TEST_HOST}"
+	check "/etc/hosts follows" grep -qE "^127\.0\.1\.1[[:space:]]+${TEST_HOST}$" "${ROOT}/etc/hosts"
+	nm="${ROOT}/etc/NetworkManager/system-connections/genesis-wifi.nmconnection"
+	check "Wi-Fi connection written" grep -q "^psk=${TEST_PSK}$" "${nm}"
+	check "Wi-Fi connection is private" test "$(stat -c %a "${nm}" 2> /dev/null)" = 600
+	check "Wi-Fi country in cmdline.txt" grep -q 'cfg80211.ieee80211_regdom=IN' "${fw}/cmdline.txt"
+	check "time zone Asia/Tokyo" test "$(readlink "${ROOT}/etc/localtime")" = /usr/share/zoneinfo/Asia/Tokyo
+	check "keyboard gb" grep -q '^XKBLAYOUT="gb"$' "${ROOT}/etc/default/keyboard"
+	check "SSH key authorised" grep -qF "${TEST_KEY}" "${ROOT}/home/${TEST_USER}/.ssh/authorized_keys"
+	check "settings wiped from the card" cmp -s "${fw}/genesis-setup.txt" "${ROOT}/usr/share/genesis/genesis-setup-placeholder.txt"
+	check "no errors reported" test -z "$(grep -iE 'error|fail|not ' "${fw}/genesis-setup-result.txt")"
+	check "password not in the result or the log" test -z "$(grep -lF -e "${TEST_PASS}" -e "${TEST_PSK}" "${fw}/genesis-setup-result.txt" "${ROOT}/var/log/genesis-firstboot.log")"
+	echo "image-smoke: first boot: ${failures} failure(s)"
+	echo "${failures}" > "${OUT}/firstboot-failures"
+	[ "${failures}" -eq 0 ]
+}
+if [ "${FIRSTBOOT}" = 1 ]; then
+	if ! first_boot; then
+		echo "image-smoke: FAIL first-boot setup" >&2
+		echo 1 > "${OUT}/result"
+		exit 1
+	fi
 fi
 
 if [ ! -x "${ROOT}/usr/share/genesis-shell/preview.sh" ]; then

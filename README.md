@@ -21,14 +21,14 @@ of the desktop that CI took inside the image before publishing it.
 | --- | --- | --- |
 | Base | Raspberry Pi OS Desktop, trixie, arm64 (Pi 5 first; also Pi 4, 400, 500, CM4/CM5, Zero 2 W, Pi 3) | `BASE_STAGES` in `config` |
 | Hostname | `nodobox`, reachable as `nodobox.local` | `config` |
-| User | `nodoai`; password from secret `FIRST_USER_PASS` | `config`, secrets |
-| Wi-Fi | network from secrets `WIFI_SSID` / `WIFI_PASSWORD`, country `IN` | secrets, `config` |
+| User | `nodoai`; the password is typed into **Genesis Imager** while flashing (the image itself has none) | Genesis Imager; `config` for the built-in name |
+| Wi-Fi | `NodoAI`, passphrase typed into Genesis Imager; country `IN` | Genesis Imager; `config` |
 | Locale, keyboard, time zone | `en_US.UTF-8`, `us`, `Asia/Kolkata` | `config` |
 | Desktop | **Genesis** session: labwc + Genesis Shell (see below). Raspberry Pi's stock labwc desktop stays installed as a fallback, selectable on the login screen | `stage-custom/11-genesis-shell` |
 | Look | dark glass: translucent panel and cards over a blurred copy of the wallpaper, 16px rounded corners, steel-blue accent, Inter + JetBrains Mono, Papirus icons, five wallpapers | `GENESIS_ACCENT`, `GENESIS_WALLPAPER` in `custom.conf`; Genesis Settings |
 | Boot | Plymouth splash with the Genesis logo, straight into the desktop as `nodoai` | `ENABLE_BOOT_SPLASH`, `DESKTOP_AUTOLOGIN` |
 | Apps | Visual Studio Code (Microsoft repository) with the Python extensions, Chromium as default browser, the Raspberry Pi desktop application set | `INSTALL_VSCODE`, `VSCODE_EXTENSIONS`, `DEFAULT_BROWSER` |
-| Python | `python` = CPython 3.10.22 under `/opt/python` (user default, VS Code interpreter); `python3` = the OS's 3.13; `uv` installed for more versions | `PYTHON_PRIMARY` |
+| Python | for you: `python` = CPython 3.10.22 (default, VS Code interpreter) and `python3.15` = 3.15.1, the newest stable release, both under `/opt/python`; for the system: `python3` = the OS's 3.13, left alone; `uv` for more versions; `genesis-python` lists them all | `PYTHON_PRIMARY`, `PYTHON_LATEST` |
 | Interfaces | I2C, SPI, serial port (UART on GPIO 14/15, Pi 5 `uart0`), SSH, VNC (wayvnc) on; serial console and 1-Wire off | `ENABLE_*` in `custom.conf` |
 | Settings | **Genesis Settings** (interfaces, system, appearance, connectivity, display and sound, software, about) plus Raspberry Pi Configuration | `stage-custom/12-genesis-settings` |
 | Behaviour | persistent journal, automatic security updates, cloud-init seed files on the boot partition, screen blanks after 10 minutes | `custom.conf` |
@@ -46,13 +46,25 @@ Why these choices, in two sentences each:
   of the wallpaper; the panel, launcher, cards and dialogs look frosted at
   zero GPU cost, and windows under the panel are never there anyway because
   the panel reserves its space.
-* **Python 3.10 as `python`, not as `python3`.** The OS, apt and raspi-config
-  run on the system 3.13; replacing it breaks them. 3.10.22 is the last 3.10
-  release and the series is end-of-life, so plan to move your code to 3.12 or
-  3.13 (`uv python install 3.12` is one command). The Raspberry Pi libraries
-  the OS ships (`gpiozero`, `rpi-lgpio`, `picamera2`) live in the system 3.13;
-  in 3.10 install what you need with `pip install gpiozero rpi-lgpio` or run
-  `python3`.
+* **Two Pythons for you, one for the system, kept apart.** The system's
+  Python is Debian's 3.13 at `/usr/bin/python3`: apt, raspi-config, the
+  desktop shell and Genesis Settings run on it, and their GTK and apt modules
+  are compiled for it, so it is the right version and stays untouched
+  (`pip` refuses to install into it). Your Pythons are self-contained builds
+  under `/opt/python/<version>` that nothing in the OS uses:
+  3.10.22 as `python` / `pip` (also `python3.10`, `pip3.10`) and 3.15.1 as
+  `python3.15` / `pip3.15`. `pip install` without a virtual environment goes
+  to `~/.local`. Two things to know: 3.10.22 is the last 3.10 release and the
+  series is end-of-life, so plan to move your code on; and 3.15 is new, so
+  some packages have no aarch64 wheels for it yet (`uv python install 3.14`
+  is one command away). The Raspberry Pi libraries the OS ships (`gpiozero`,
+  `rpi-lgpio`, `picamera2`) live in the system 3.13; in your Pythons install
+  what you need with `pip install gpiozero rpi-lgpio`, or run `python3`.
+* **Credentials come from the imager, not the image.** A password baked into
+  the image is the same on every box and readable by anyone who has the
+  image (this repository is public). Genesis Imager writes a salted hash of
+  the password you type, plus Wi-Fi and the other settings, onto the card
+  while flashing; the box applies them on first boot and erases them.
 
 ## Quick start (GitHub Actions)
 
@@ -63,8 +75,10 @@ Why these choices, in two sentences each:
    `FIRST_USER_PASS` or `WIFI_PASSWORD` into it unless you set the repository
    variable `ALLOW_SECRETS_IN_PUBLIC_IMAGE` to `true`. For a product image with
    a known default password, make the repository private.
-2. Add the repository secrets under *Settings → Secrets and variables →
-   Actions*:
+2. Nothing else is needed: the user's password and the Wi-Fi passphrase are
+   entered in Genesis Imager when flashing. Only if you want them baked into
+   the image instead (a private repository; every box then shares them), add
+   repository secrets under *Settings → Secrets and variables → Actions*:
 
    | Secret | Value for the NodoAI box |
    | --- | --- |
@@ -77,25 +91,93 @@ Why these choices, in two sentences each:
    first lints, dry-runs the stage and renders the shell headless on an arm64
    container (about 5 minutes; screenshots in the `genesis-shell-preview`
    artifact), then builds the image (about 20 minutes on the arm64 runner),
-   then mounts the image, starts the Genesis session inside it and screenshots
-   it (`genesis-image-smoke` artifact). A blank desktop fails the build.
-4. Download the `genesis-os` artifact and unzip it.
-5. Flash `image_*.img.xz`: Raspberry Pi Imager (*Use custom*), or
-   `xzcat image_*.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync`.
-   If you let Imager apply its own *OS customisation*, it overwrites the
-   `user-data` and `network-config` files this image ships.
-6. Tag a commit `v1.2.3` and push the tag: the workflow attaches the image to a
-   GitHub release.
+   then writes the image through Genesis Imager with a test user, runs the
+   first boot inside it and checks the account, password, Wi-Fi and locale,
+   starts the Genesis session as that user and screenshots it
+   (`genesis-image-smoke` artifact). Any failure, or a blank desktop, fails
+   the build.
+4. Download the `genesis-os` artifact and unzip it, and the Genesis Imager app
+   for your computer (`genesis-imager-windows-x64`, `-macos-arm64` or
+   `-linux-x86_64` artifact; tagged releases carry both).
+5. Flash it with **Genesis Imager** (next section): pick the image, the card,
+   type the password and the Wi-Fi passphrase, *Write*.
+6. Tag a commit `v1.2.3` and push the tag: the workflow attaches the image and
+   the Genesis Imager apps to a GitHub release.
+
+## Genesis Imager
+
+The tool that writes Genesis OS onto a card **with your user, password and
+Wi-Fi**, so the box boots straight into the desktop, on the network, with
+nothing to type on it. One Python file using only the standard library
+([`imager/genesis_imager.py`](imager/genesis_imager.py)); CI also builds it
+into apps for Windows, macOS (Apple silicon) and Linux.
+
+| Field | Default |
+| --- | --- |
+| Image | *Download latest* (the newest GitHub release, checksum-verified) or *Choose file* (`.img`, `.img.xz`, `.img.gz`, or the `.zip` artifact) |
+| Storage | removable cards and USB drives only; the disk your computer runs from is never listed |
+| User name, password | `nodoai`, password required (the image has none) |
+| Host name | `nodobox` (`nodobox.local`) |
+| Wi-Fi | `NodoAI`, passphrase, country `IN`, hidden network option |
+| Time zone, keyboard | `Asia/Kolkata`, `us` |
+| SSH | on; optional public keys; optional "key logins only" |
+
+It writes the whole card, partition table last, reads it back to verify, and
+ejects it. Your choices except the passwords are remembered for next time.
+
+* **Windows:** run `genesis-imager-windows-x64.exe`; it asks for administrator
+  rights (needed to write a disk). SmartScreen may warn about an unsigned app:
+  *More info → Run anyway*.
+* **macOS:** unzip, then right-click *Genesis Imager* → *Open* the first time
+  (the app is not notarised). It asks for your password when writing.
+* **Linux:** `chmod +x genesis-imager-linux-x86_64 && ./genesis-imager-linux-x86_64`
+  (asks for your password through polkit), or `python3 imager/genesis_imager.py`.
+
+Command line (any OS with Python 3.9+, no window needed):
+
+```sh
+python3 imager/genesis_imager.py --list-devices
+sudo python3 imager/genesis_imager.py --image genesis-os.img.xz --device /dev/sdX --user nodoai
+# or write a customised image file and flash it with any tool you like:
+python3 imager/genesis_imager.py --image genesis-os.img.xz --output nodobox.img --user nodoai
+```
+
+It prompts for the password and the Wi-Fi passphrase; `--help` lists every
+option (`--wifi-ssid ""` for no Wi-Fi, `--ssh-key-file`, `--ssh-keys-only`,
+`--timezone`, `--keyboard`, `--hostname`, `--no-ssh`, `--image latest`).
+
+**How it works.** The image's boot partition holds `genesis-setup.txt`, a
+placeholder of 16 blocks of 512 bytes, each starting with a marker. While
+streaming the image to the card the imager finds those blocks (inside the
+boot partition only, at sector boundaries, each exactly once) and replaces
+them with your settings: `KEY=VALUE` lines with the password as a SHA-512
+crypt hash (100 000 rounds, random salt) and free text base64-encoded. Nothing
+in the file system changes size or place, so no FAT code is involved. On the
+first boot `genesis-firstboot.service` runs before Raspberry Pi's first-boot
+wizard, the login screen, NetworkManager and SSH, applies the settings (the
+account through Raspberry Pi's own `userconf-pi`, which renames the user,
+sets the password, cancels the wizard and keeps desktop autologin), writes a
+summary without secrets to `genesis-setup-result.txt` on the boot partition,
+and overwrites the settings with the placeholder again.
+
+Flashing with Raspberry Pi Imager, balenaEtcher or `dd` still works: the
+placeholder is left alone and the standard Raspberry Pi wizard asks for a
+user name and password on the first boot.
 
 ## First boot
 
-With the secrets above set, the box boots to the Genesis splash, logs
-`nodoai` into the Genesis desktop, joins the `NodoAI` Wi-Fi, and answers on
-`nodobox.local` for SSH and VNC with the `FIRST_USER_PASS` password. Without
-`FIRST_USER_PASS` the image behaves like the official one: the first-boot
-wizard asks for a username and password.
+Flashed with Genesis Imager, the box boots to the Genesis splash, logs your
+user into the Genesis desktop, joins the Wi-Fi, and answers on
+`nodobox.local` (or the host name you chose) for SSH and VNC with the password
+you typed. `genesis-setup-result.txt` on the boot partition says what was
+applied; `/var/log/genesis-firstboot.log` on the box has the details.
 
-| At build time you set | What happens on first boot |
+Flashed with any other tool, the image behaves like the official one: the
+first-boot wizard asks for a user name and password. The build-time secrets
+below are the older alternative for private repositories; a password baked
+in at build time is shared by every box flashed from that image.
+
+| At build time you set | What happens on first boot (without Genesis Imager) |
 | --- | --- |
 | `FIRST_USER_PASS` (optionally `SSH_AUTHORIZED_KEYS`) | the user exists with that password, SSH and VNC are up: `ssh nodoai@nodobox.local`, any VNC viewer on `nodobox.local:5900`. |
 | only `SSH_AUTHORIZED_KEYS` | **not usable headless.** pi-gen creates the user with `adduser --disabled-login`, which on trixie sets the shell to `/usr/sbin/nologin` until a password is set, so SSH refuses the key login, and the first-boot wizard runs. Set `FIRST_USER_PASS` as well; the workflow prints a warning if you don't. |
@@ -311,18 +393,22 @@ stage-custom/
   05-hello-service/             example: ship a script + systemd unit
   06-apt-repos/                 Microsoft repository for VS Code (key vendored)
   07-desktop-packages/          settings-app runtime, wayvnc, plymouth, fonts
-  08-python/                    CPython 3.10 under /opt/python as "python", uv
+  08-python/                    your Pythons: 3.10 ("python") and 3.15 under /opt/python, uv, genesis-python
   09-vscode/                    VS Code, default settings, Python extensions
   10-branding/                  icons, Genesis icon theme, wallpapers, Plymouth splash, login screen
   11-genesis-shell/             Genesis Shell (files/genesis-shell), labwc session config, GTK theme,
                                 install.sh (shared with CI) and preview.sh (headless smoke test)
   12-genesis-settings/          Genesis Settings app and its privileged helper
   13-system-defaults/           interfaces, VNC, browser, autologin, default session, splash flags
+  14-first-boot/                genesis-firstboot.service and the setup-area placeholder on the boot partition
   90-services/                  enable/disable systemd units (runs last)
   secrets.env.example           template for secrets.env
 branding/src/                   the logo and wallpaper the assets are generated from
 scripts/make-assets.py          regenerates icons, splash and wallpapers (needs Pillow)
-scripts/image-smoke.sh          mounts a built image and runs the headless desktop test inside it
+scripts/image-smoke.sh          writes a built image through Genesis Imager, runs first boot and the
+                                headless desktop test inside it
+scripts/test-firstboot.sh       genesis-firstboot against a fake root (no root rights needed)
+imager/                         Genesis Imager (genesis_imager.py) and its tests
   secrets.env                   git-ignored, your secrets (local builds)
   build-info.env                git-ignored, generated per build
 .github/workflows/build-image.yml
@@ -330,6 +416,14 @@ scripts/image-smoke.sh          mounts a built image and runs the headless deskt
 
 ## Security notes
 
+* **The image carries no credentials** when the `FIRST_USER_PASS` and
+  `WIFI_*` secrets are unset (the default, and the right choice for this
+  public repository). Genesis Imager puts the password, as a salted SHA-512
+  crypt hash, and the Wi-Fi passphrase on each card while flashing; the first
+  boot applies them and overwrites them in place on the card, so they do not
+  stay on the boot partition. The plain password never leaves your computer.
+  On a Windows, macOS or Linux machine the imager stores your last settings
+  without either password.
 * Secrets never enter the repository. CI writes `stage-custom/secrets.env`
   from GitHub secrets at build time; locally you create it yourself. Neither
   file is copied into the image.
@@ -388,7 +482,19 @@ scripts/image-smoke.sh          mounts a built image and runs the headless deskt
   `app_id` does not match a desktop file; add it to `APP_ID_ALIASES` in
   `genesis_shell/services/apps.py`.
 * **`python` is 3.10 but a tool wants 3.13:** call `python3`, or run the tool
-  with `uv run --python 3.13`.
+  with `uv run --python 3.13`. `genesis-python` shows which interpreter is
+  which.
+* **`pip3.15 install` builds from source or fails:** the package has no wheel
+  for Python 3.15 on aarch64 yet. Use `python` (3.10), or
+  `uv python install 3.14` and a virtual environment on 3.14.
+* **The first boot asked for a user name anyway:** the card was not written by
+  Genesis Imager, or the settings were rejected. Read
+  `genesis-setup-result.txt` on the boot partition (any computer can open it).
+* **Genesis Imager says the image has no setup area:** the image was built
+  before Genesis Imager existed, or it is not a Genesis OS image. Build or
+  download a current one.
+* **Genesis Imager lists no card:** check *Show fixed disks* (some USB card
+  readers report as fixed disks), then *Refresh*.
 
 ## Alternatives
 

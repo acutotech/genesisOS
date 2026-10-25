@@ -105,9 +105,96 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  imager-test:
+    name: Genesis Imager tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: "3.13"}
+          - {os: ubuntu-latest, python: "3.9"}
+          - {os: windows-latest, python: "3.13"}
+          - {os: macos-latest, python: "3.13"}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Unit tests
+        run: python -m unittest discover -s imager -v
+
+  imager-build:
+    name: Genesis Imager app (${{ matrix.name }})
+    needs: imager-test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, name: windows-x64}
+          - {os: macos-latest, name: macos-arm64}
+          - {os: ubuntu-24.04, name: linux-x86_64}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Build with PyInstaller
+        shell: bash
+        env:
+          TARGET: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q pyinstaller==6.22.2 pillow==12.2.0
+          icons=stage-custom/10-branding/files/icons/hicolor
+          mkdir -p imager-build out
+          cp "$icons/64x64/apps/genesis-os.png" imager-build/genesis-os.png
+          sep=:
+          [ "${RUNNER_OS}" = Windows ] && sep=';'
+          common=(--noconfirm --clean --windowed --distpath imager-build/dist --workpath imager-build/work
+                  --specpath imager-build --icon "$PWD/$icons/256x256/apps/genesis-os.png"
+                  --add-data "$PWD/imager-build/genesis-os.png${sep}.")
+          case "${RUNNER_OS}" in
+            Windows)
+              # --uac-admin: Windows asks for administrator rights when the app starts
+              python -m PyInstaller "${common[@]}" --onefile --uac-admin --name GenesisImager imager/genesis_imager.py
+              app=imager-build/dist/GenesisImager.exe
+              "$app" --write-placeholder out/placeholder.txt
+              cp "$app" "out/genesis-imager-${TARGET}.exe"
+              ;;
+            macOS)
+              python -m PyInstaller "${common[@]}" --name "Genesis Imager" \
+                --osx-bundle-identifier org.genesisos.imager imager/genesis_imager.py
+              "imager-build/dist/Genesis Imager.app/Contents/MacOS/Genesis Imager" --write-placeholder out/placeholder.txt
+              ditto -c -k --keepParent "imager-build/dist/Genesis Imager.app" "out/genesis-imager-${TARGET}.zip"
+              ;;
+            Linux)
+              python -m PyInstaller "${common[@]}" --onefile --name genesis-imager imager/genesis_imager.py
+              imager-build/dist/genesis-imager --write-placeholder out/placeholder.txt
+              cp imager-build/dist/genesis-imager "out/genesis-imager-${TARGET}"
+              ;;
+          esac
+          # the app runs and produces the setup area the image carries
+          cmp out/placeholder.txt stage-custom/14-first-boot/files/genesis-setup.txt
+          rm out/placeholder.txt
+          ls -l out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-imager-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
   build:
     name: Build image
-    needs: [lint, shell-preview]
+    needs: [lint, shell-preview, imager-test]
     # Full builds take a long time: only main, release tags and manual runs.
     if: >-
       github.event_name == 'workflow_dispatch'
@@ -327,7 +414,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: build
+    needs: [build, imager-build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -339,9 +426,20 @@ jobs:
           name: ${{ needs.build.outputs.image-name }}
           path: deploy
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: genesis-imager-*
+          merge-multiple: true
+          path: imager
+
+      - name: Imager checksums
+        run: cd imager && sha256sum -- * > SHA256SUMS-imager && cat SHA256SUMS-imager
+
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # Everything pi-gen deployed, so SHA256SUMS matches the attached files.
-          files: deploy/*
+          files: |
+            deploy/*
+            imager/*
           fail_on_unmatched_files: true
           generate_release_notes: true

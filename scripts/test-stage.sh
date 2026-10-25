@@ -114,7 +114,7 @@ reset_knobs() {
 	unset ENABLE_SERVICES DISABLE_SERVICES PASSWORDLESS_SUDO
 	unset ENABLE_SERIAL_PORT ENABLE_SERIAL_CONSOLE ENABLE_ONEWIRE ENABLE_VNC GENESIS_WALLPAPER GENESIS_ACCENT GENESIS_BLANK_TIMEOUT
 	unset GENESIS_PANEL_POSITION GENESIS_PANEL_LAUNCHERS DESKTOP_AUTOLOGIN DEFAULT_BROWSER ENABLE_BOOT_SPLASH
-	unset INSTALL_VSCODE VSCODE_EXTENSIONS PYTHON_PRIMARY GENESIS_PRUNE_WORK
+	unset INSTALL_VSCODE VSCODE_EXTENSIONS PYTHON_PRIMARY PYTHON_LATEST GENESIS_PRUNE_WORK
 	export ENABLE_CLOUD_INIT="1" WPA_COUNTRY="IN" ARCH="arm64"
 }
 
@@ -183,9 +183,26 @@ assert_file "${ROOTFS_DIR}/etc/apt/sources.list.d/vscode.sources"
 assert_grep 'install -y code' "${CHROOT_LOG}"
 assert_file "${ROOTFS_DIR}/home/nodoai/.config/Code/User/settings.json"
 assert_grep 'cpython-3.10.22\+20261009-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz' "${CHROOT_LOG}"
-assert_grep '"ecbe978a7ecbeb3a9aed67bb5d161180701513b4fa8101037b2a3f1ac11e96be  .*" \| sha256sum -c -' "${CHROOT_LOG}"
+# shellcheck disable=SC2016  # the chroot log holds the literal heredoc text
+assert_grep 'echo "\$sha  \$tmp/python-\$series.tgz" \| sha256sum -c -' "${CHROOT_LOG}"
+assert_grep 'cpython-3.15.1\+20261021-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz' "${CHROOT_LOG}"
+assert_grep '^install_python 3.15 .* 6efe65c43ae0bdebebeab4607f91a0053dd36d5e51cfd69a791d544e9b122be7$' "${CHROOT_LOG}"
+assert_grep '^install_python 3.10 .* ecbe978a7ecbeb3a9aed67bb5d161180701513b4fa8101037b2a3f1ac11e96be$' "${CHROOT_LOG}"
 assert_grep 'ln -sfn "/opt/python/3.10/bin/python3.10" /usr/local/bin/python$' "${CHROOT_LOG}"
 assert_no_grep 'ln -sfn [^ ]* /usr/local/bin/python3$' "${CHROOT_LOG}"
+assert_exec "${ROOTFS_DIR}/usr/local/bin/genesis-python"
+# first-boot setup area (Genesis Imager)
+assert_exec "${ROOTFS_DIR}/usr/lib/genesis/genesis-firstboot"
+assert_file "${ROOTFS_DIR}/usr/lib/systemd/system/genesis-firstboot.service"
+assert_grep '^Before=userconfig.service lightdm.service' "${ROOTFS_DIR}/usr/lib/systemd/system/genesis-firstboot.service"
+assert_grep '^systemctl enable genesis-firstboot.service$' "${CHROOT_LOG}"
+assert_eq "$(stat -c %s "${ROOTFS_DIR}/boot/firmware/genesis-setup.txt")" 8192 "setup area is 16 x 512 bytes"
+if cmp -s "${ROOTFS_DIR}/boot/firmware/genesis-setup.txt" <(python3 "${REPO_DIR}/imager/genesis_imager.py" --write-placeholder /dev/stdout); then
+	ok "setup area placeholder matches Genesis Imager's"
+else
+	fail "setup area placeholder differs from Genesis Imager's (regenerate: imager/genesis_imager.py --write-placeholder)"
+fi
+assert_eq "$(cmp -s "${ROOTFS_DIR}/boot/firmware/genesis-setup.txt" "${ROOTFS_DIR}/usr/share/genesis/genesis-setup-placeholder.txt" && echo same)" same "placeholder copy kept for restoring after first boot"
 assert_file "${ROOTFS_DIR}/usr/share/icons/hicolor/256x256/apps/genesis-os.png"
 assert_file "${ROOTFS_DIR}/usr/share/icons/Genesis/48x48/places/start-here.png"
 assert_grep '^Inherits=Papirus-Dark,PiXnoir,PiXtrix' "${ROOTFS_DIR}/usr/share/icons/Genesis/index.theme"

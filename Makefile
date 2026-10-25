@@ -4,7 +4,7 @@ SHELL := /bin/bash
 # Shell sources: scripts, stage scripts, and the sourced config files.
 SH_FILES := $(shell find . -path ./pi-gen -prune -o -path ./build -prune -o -path ./.git -prune -o \
               \( -name '*.sh' -o -name 'config' -o -name 'custom.conf' -o -name 'genesis-helper' \
-              -o -name 'genesis-session' -o -name 'genesis-session-start' -o -name 'genesis-respawn' -o -name 'genesis-fallback' \
+              -o -name 'genesis-session' -o -name 'genesis-session-start' -o -name 'genesis-respawn' -o -name 'genesis-fallback' -o -name 'genesis-python' -o -name 'genesis-firstboot' \
               -o -name 'genesis-shell' -o -name 'genesis-shell-ctl' -o -name 'genesis-settings' \) -type f -print | sort)
 PY_FILES := $(shell find . -path ./pi-gen -prune -o -path ./build -prune -o -path ./.git -prune -o \
               \( -name '*.py' -o -name 'genesis-xdg-autostart' -o -name 'genesis-idle' \) -type f -print | sort)
@@ -30,8 +30,10 @@ lint-actions: ## actionlint the GitHub workflow (skipped if actionlint is not in
 	@if command -v actionlint >/dev/null 2>&1; then actionlint -color; \
 	else echo "actionlint not installed, skipping (https://github.com/rhysd/actionlint)"; fi
 
-test: ## Dry-run the custom stage against a fake root filesystem (no root, no Docker)
+test: ## Dry-run the custom stage, the first-boot setup and Genesis Imager (no root, no Docker)
 	scripts/test-stage.sh
+	scripts/test-firstboot.sh
+	python3 -m unittest discover -s imager -v
 
 build: ## Build the image with Docker (see scripts/build-local.sh --help)
 	scripts/build-local.sh

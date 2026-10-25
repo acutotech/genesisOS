@@ -1,0 +1,17 @@
+[Unit]
+Description=Genesis OS first-boot setup (settings written by Genesis Imager)
+Documentation=man:systemd.service(5)
+After=local-fs.target
+RequiresMountsFor=/boot/firmware
+# before Raspberry Pi's first-boot wizard, the login screen, the network and SSH
+Before=userconfig.service lightdm.service display-manager.service NetworkManager.service ssh.service wayvnc.service
+ConditionPathExists=/boot/firmware/genesis-setup.txt
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/genesis/genesis-firstboot
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
