@@ -3,8 +3,9 @@
 
     genesis-eeprom apply [--again]     what genesis-eeprom.service runs at boot
     genesis-eeprom status [--json]     bootloader version, boot order, what was done
-    genesis-eeprom first auto|sd|nvme|usb
+    genesis-eeprom first auto|sd|nvme|usb|keep
                                        choose the boot medium tried first, and apply
+    genesis-eeprom cancel              take back a staged update before rebooting
     genesis-eeprom plan (--running FILE | --image PIEEPROM.BIN) --boot-mode N
                                        print the config that would be written (no hardware needed)
 
@@ -27,12 +28,17 @@ How it changes the EEPROM, and why:
 * It runs once. The next boot checks the result and records it; after that the
   service never runs again, so a later change with raspi-config or
   rpi-eeprom-config is never undone. `apply --again` starts over on request.
+  An update that never reached the bootloader (an rpi-eeprom upgrade removes
+  staged updates) is staged once more before it gives up.
 
 Only a Raspberry Pi 5 (not a CM5 or Pi 500, whose factory settings differ) is
 touched, never in a chroot (the image build and CI see the build host's /proc),
-never with secure boot or FREEZE_VERSION=1. Undo before rebooting:
-`sudo rpi-eeprom-update -r`; the original config is kept in
-/var/lib/genesis/eeprom/original.conf.
+never with secure boot, FREEZE_VERSION=1 in any section, or an administrator's
+RPI_EEPROM_IMMEDIATE_UPDATE=1, and not while the clock is behind the
+bootloader's last update (the bootloader would ignore it). A failure after
+rpi-eeprom-update ran takes the staged update back. Undo before rebooting:
+`sudo genesis-eeprom cancel`; the config from before Genesis first changed it is
+kept in /var/lib/genesis/eeprom/original.conf.
 """
 
 from __future__ import annotations
@@ -65,7 +71,8 @@ EEPROM_DEFAULTS = "/etc/default/rpi-eeprom-update"
 IMAGE_SIZE = 2 * 1024 * 1024
 MAX_CONFIG = 4076          # bootconf.txt is one 4 KiB sector minus its header
 PI5_TYPE = 0x17            # revision code type of the Raspberry Pi 5 (CM5 0x18, Pi 500 0x19)
-MAX_DEFERRALS = 3
+MAX_DEFERRALS = 3          # boots to wait for another update or the clock
+MAX_ATTEMPTS = 2           # stagings that never reached the bootloader before giving up
 
 MEDIA = {"sd": 1, "nvme": 6, "usb": 4}            # BOOT_ORDER codes
 FALLBACKS = (1, 6, 4)                             # SD, NVMe, USB: the factory order
@@ -128,6 +135,8 @@ def order_problem(modes: list[int]) -> str | None:
         return f"boot mode {unknown[0]:x} is not one a Raspberry Pi 5 knows"
     if 3 in modes[:-1]:
         return "USB device boot (3) is not the last mode"
+    if any(m in (0xE, 0xF) for m in modes[:-1]):
+        return "stop or restart (e, f) is not the last mode, so the modes after it are never tried"
     if modes and modes[-1] == 0xE:
         return "it ends in stop (e)"
     return None
@@ -137,8 +146,9 @@ def describe_order(value: str | None) -> str:
     modes = parse_order(value or "0xf41")
     if modes is None:
         return value or ""
-    names = [MODE_NAMES.get(m, f"mode {m:x}") for m in modes if m != 0xF]
-    return " → ".join(names) + (" → repeat" if modes and modes[-1] == 0xF else "")
+    last = len(modes) - 1
+    names = ["repeat" if m == 0xF and i == last else MODE_NAMES.get(m, f"mode {m:x}") for i, m in enumerate(modes)]
+    return " → ".join(names)
 
 
 def boot_order_first(current: str | None, first: int) -> str:
@@ -328,6 +338,8 @@ def in_chroot() -> bool:
         return os.path.exists(path("/fake-chroot"))
     try:
         root, init_root = os.stat("/"), os.stat("/proc/1/root/.")
+    except PermissionError:
+        return False  # not root: only status can run, and it changes nothing
     except OSError:
         return True   # no /proc of our own: not a booted system
     return (root.st_dev, root.st_ino) != (init_root.st_dev, init_root.st_ino)
@@ -407,15 +419,17 @@ def stage(config: str, workdir: str) -> dict:
         raise RuntimeError("the built image differs from the packaged one in more than its config")
     if normalise(run(tool("rpi-eeprom-config"), built)) != config:
         raise RuntimeError("the built image does not read back with the planned config")
-    # staged, not written at once: the bootloader applies it at the next reboot
-    run(tool("rpi-eeprom-update"), "-d", "-f", built, env={"RPI_EEPROM_IMMEDIATE_UPDATE": "0"})
-    pending = ""
     try:
-        with open(path(PENDING), encoding="ascii", errors="replace") as fh:
-            pending = fh.read().split(" ", 1)[0].strip()
-    except OSError:
-        pass
-    if pending == "recovery":
+        # staged, not written at once: the bootloader applies it at the next reboot
+        run(tool("rpi-eeprom-update"), "-d", "-f", built, env={"RPI_EEPROM_IMMEDIATE_UPDATE": "0"})
+        pending = ""
+        try:
+            with open(path(PENDING), encoding="ascii", errors="replace") as fh:
+                pending = fh.read().split(" ", 1)[0].strip()
+        except OSError:
+            pass
+        if pending != "recovery":
+            raise RuntimeError(f"rpi-eeprom-update did not stage the update (pending: {pending or 'nothing'})")
         bootfs = boot_fs()
         upd, sig = os.path.join(bootfs, "pieeprom.upd"), os.path.join(bootfs, "pieeprom.sig")
         with open(upd, "rb") as fh:
@@ -427,8 +441,59 @@ def stage(config: str, workdir: str) -> dict:
         if normalise(run(tool("rpi-eeprom-config"), upd)) != config:
             raise RuntimeError("the staged pieeprom.upd does not hold the planned config")
         os.sync()
-    return {"image": os.path.basename(image), "version": stamp_date(image_stamps(image)[0]),
-            "path": pending or "unknown"}
+    except (RuntimeError, OSError, subprocess.SubprocessError) as why:
+        # whatever rpi-eeprom-update left on the boot partition would be flashed at the next boot
+        left = "the partly staged update was taken back" if cancel_staged() else \
+            "an update may still be staged: run sudo rpi-eeprom-update -r before rebooting"
+        raise StageFailed(f"{why}; {left}") from why
+    return {"image": os.path.basename(image), "version": stamp_date(image_stamps(image)[0]), "path": pending}
+
+
+class StageFailed(Exception):
+    """Staging failed after rpi-eeprom-update ran."""
+
+
+def cancel_staged() -> bool:
+    """Remove a staged update; True when none is left on the boot partition."""
+    run(tool("rpi-eeprom-update"), "-r", check=False)
+    try:
+        return not os.path.exists(os.path.join(boot_fs(), "pieeprom.upd"))
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return False
+
+
+def board_serial() -> str:
+    try:
+        with open(path(f"{DT}/serial-number"), "rb") as fh:
+            return fh.read().replace(b"\x00", b"").decode("ascii", "replace").strip()
+    except OSError:
+        return ""
+
+
+def defaults_value(name: str) -> str:
+    """A setting from /etc/default/rpi-eeprom-update, which rpi-eeprom-update sources first."""
+    defaults = path(EEPROM_DEFAULTS)
+    if not os.path.exists(defaults):
+        return ""
+    script = f'. "$1" > /dev/null 2>&1; printf %s "${{{name}:-}}"'
+    return run("/bin/sh", "-c", script, "sh", defaults, env={name: ""}, check=False).strip()
+
+
+def preflight(running: str, mode: int) -> None:
+    """Reasons not to stage now: Skip (not at all) or Deferred (at a later boot)."""
+    bootloader_part = re.split(r"^\s*\[config\.txt\]\s*$", running, maxsplit=1, flags=re.M | re.I)[0]
+    # in any section, as rpi-eeprom-update's own check does: -f would override a frozen bootloader
+    if re.search(r"^\s*FREEZE_VERSION\s*=\s*1\s*$", bootloader_part, re.M | re.I):
+        raise Skip("FREEZE_VERSION=1: the bootloader is frozen")
+    if mode != MEDIA["sd"] and re.search(r"^\s*ENABLE_SELF_UPDATE\s*=\s*0\s*$", bootloader_part, re.M | re.I):
+        raise Skip("ENABLE_SELF_UPDATE=0: an update can only be applied from an SD card")
+    immediate = defaults_value("RPI_EEPROM_IMMEDIATE_UPDATE")
+    if immediate not in ("", "0"):
+        raise Skip(f"RPI_EEPROM_IMMEDIATE_UPDATE={immediate} in {EEPROM_DEFAULTS}: Genesis OS only stages bootloader updates")
+    updated = dt_int("chosen/bootloader/update-timestamp")
+    if updated and time.time() <= updated:
+        # the bootloader ignores an update stamped older than its last one
+        raise Deferred("the clock is not set yet (it is behind the bootloader's last update)")
 
 
 # -- state ----------------------------------------------------------------------------------
@@ -494,32 +559,44 @@ def load_settings() -> dict:
         return read_settings("enabled=0\n")
 
 
-def check_staged(state: dict) -> None:
-    """The boot after staging: did the bootloader take the new config?"""
+def check_staged(state: dict) -> str:
+    """The boot after staging: did the bootloader take the new config? "retry" when it never got it."""
     running = running_config()
     if running == read_text("desired.conf"):
         state.update(status="applied", reason="the bootloader runs the Genesis settings")
-    elif running == read_text("original.conf"):
+    elif running == read_text("previous.conf"):
+        if int(state.get("attempts", 1)) < MAX_ATTEMPTS:
+            log("the staged update never reached the bootloader (an rpi-eeprom upgrade removes staged updates); staging it again")
+            return "retry"
         state.update(status="failed", reason="the update was not applied (cancelled, or the bootloader refused it)")
     else:
         state.update(status="user-changed", reason="the bootloader config was changed by something else since")
     log(state["reason"])
     save_state(state, done=True)
+    return state["status"]
 
 
 def apply(again: bool = False) -> int:
-    settings = load_settings()
+    if not ROOT and os.geteuid() != 0:
+        log("this needs root (sudo genesis-eeprom ...)")
+        return 1
+    try:
+        return run_apply(again)
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as why:
+        # nothing was staged (stage() handles its own failures); try again at the next boot
+        log(f"failed: {why}")
+        return 1
+
+
+def run_apply(again: bool) -> int:
     state = load_state()
     if again:
         if state.get("status") == "staged" and state.get("boot_id") == boot_id() and not in_chroot():
             # our own update from earlier in this boot (a second choice in Settings): replace it
-            run(tool("rpi-eeprom-update"), "-r", check=False)
+            cancel_staged()
         state = {}
     elif os.path.exists(state_file("done")):
         log(f"nothing to do: {state.get('status', 'done')} ({state.get('reason', '')})")
-        return 0
-    if settings["enabled"] != "1":
-        log("bootloader customisation is off (enabled=0 in /etc/genesis/bootloader.conf)")
         return 0
     try:
         mode = gate()
@@ -532,48 +609,74 @@ def apply(again: bool = False) -> int:
         if state.get("boot_id") == boot_id():
             log("an update is staged; it is applied at the next reboot")
             return 0
-        check_staged(state)
+        if state.get("serial") and state["serial"] != board_serial():
+            # the medium moved to another Pi before the reboot that would have applied it here
+            log(f"the update was staged on another Raspberry Pi ({state['serial']}); planning again for this one")
+            state = {}
+        elif check_staged(state) != "retry":
+            return 0
+        else:
+            state = {"attempts": state.get("attempts", 1)}
+    settings = load_settings()
+    if settings["enabled"] != "1":
+        log("bootloader customisation is off (enabled=0 in /etc/genesis/bootloader.conf)")
         return 0
     try:
-        if os.path.exists(path(PENDING)) or os.path.exists(os.path.join(boot_fs(), "pieeprom.upd")):
-            raise Deferred("another bootloader update is pending")
+        if os.path.exists(path(PENDING)):
+            raise Deferred("another bootloader update is pending (it is applied at the next reboot)")
         running = running_config()
         if not running:
             raise Deferred("the running bootloader config could not be read")
-        values, _conditional = settings_in(running)
-        if values.get("FREEZE_VERSION") == "1":
-            raise Skip("FREEZE_VERSION=1: the bootloader is frozen")
-        if values.get("ENABLE_SELF_UPDATE") == "0" and mode != MEDIA["sd"]:
-            raise Skip("ENABLE_SELF_UPDATE=0: an update can only be applied from an SD card")
+        preflight(running, mode)
         desired, notes = plan(running, settings, mode)
         for note in notes:
             log(note)
-        base = {"boot_mode": mode, "booted_from": MODE_NAMES.get(mode, f"mode {mode}"), "notes": notes}
+        base = {"boot_mode": mode, "booted_from": MODE_NAMES.get(mode, f"mode {mode}"), "notes": notes,
+                "serial": board_serial()}
         if desired == running:
             save_state({**base, "status": "unchanged", "reason": "the bootloader already has the Genesis settings"}, done=True)
             log("the bootloader already has the Genesis settings")
             return 0
-        write_text("original.conf", running)
+        if read_text("original.conf") is None:
+            write_text("original.conf", running)   # the config from before Genesis first changed it
+        write_text("previous.conf", running)       # what this update replaces
         write_text("desired.conf", desired)
         with tempfile.TemporaryDirectory(prefix="genesis-eeprom.") as workdir:
             staged = stage(desired, workdir)
-        reason = ("staged; the bootloader applies it at the next reboot" if staged["path"] == "recovery"
-                  else f"written to the EEPROM ({staged['path']}); active from the next reboot")
-        save_state({**base, **staged, "status": "staged", "reason": reason, "boot_id": boot_id()})
+        attempts = int(state.get("attempts", 0)) + 1
+        reason = "staged; the bootloader applies it at the next reboot"
+        save_state({**base, **staged, "status": "staged", "reason": reason, "boot_id": boot_id(), "attempts": attempts})
         log(f"{reason}: BOOT_ORDER {describe_order(settings_in(desired)[0].get('BOOT_ORDER'))}")
     except Skip as why:
         save_state({"status": "skipped", "reason": str(why)}, done=True)
         log(f"skip: {why}")
     except Deferred as why:
-        deferrals = int(state.get("deferrals", 0)) + 1
+        same_boot = state.get("status") == "deferred" and state.get("boot_id") == boot_id()
+        deferrals = int(state.get("deferrals", 0)) + (0 if same_boot else 1)
         final = deferrals >= MAX_DEFERRALS
-        save_state({"status": "failed" if final else "deferred", "reason": str(why), "deferrals": deferrals}, done=final)
+        save_state({"status": "failed" if final else "deferred", "reason": str(why), "deferrals": deferrals,
+                    "boot_id": boot_id(), "attempts": state.get("attempts", 0)}, done=final)
         log(f"{'gave up' if final else 'deferred to the next boot'}: {why}")
-    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as why:
+        return 1 if final else 0
+    except (StageFailed, RuntimeError, OSError, subprocess.SubprocessError) as why:
         save_state({"status": "failed", "reason": str(why)}, done=True)
         log(f"failed: {why}")
         return 1
     return 0
+
+
+def cancel() -> int:
+    """Take back a staged Genesis update and stop: the bootloader keeps what it has."""
+    if not ROOT and os.geteuid() != 0:
+        log("this needs root (sudo genesis-eeprom cancel)")
+        return 1
+    gone = cancel_staged()
+    state = load_state()
+    state.update(status="cancelled", reason="cancelled with genesis-eeprom cancel" if gone else
+                 "cancel requested, but an update may still be staged on the boot partition")
+    save_state(state, done=True)
+    log(state["reason"])
+    return 0 if gone else 1
 
 
 def status() -> dict:
@@ -598,13 +701,17 @@ def status() -> dict:
     except (RuntimeError, OSError) as why:
         out["config_error"] = str(why)
     out["pending"] = os.path.exists(path(PENDING))
+    out["serial"] = board_serial()
     return out
 
 
 def set_first(choice: str) -> int:
     """Settings: change boot_first in bootloader.conf and apply it now."""
-    if choice not in ("auto", *MEDIA):
-        sys.exit(f"genesis-eeprom: first must be auto, sd, nvme or usb, not {choice!r}")
+    if choice not in ("auto", "keep", *MEDIA):
+        sys.exit(f"genesis-eeprom: first must be auto, sd, nvme, usb or keep, not {choice!r}")
+    if not ROOT and os.geteuid() != 0:
+        log("this needs root (sudo genesis-eeprom first ...)")
+        return 1
     conf = path(CONF)
     try:
         with open(conf, encoding="utf-8") as fh:
@@ -629,7 +736,8 @@ def main(argv: list[str] | None = None) -> int:
     p_status = sub.add_parser("status", help="show the bootloader and what was done")
     p_status.add_argument("--json", action="store_true")
     p_first = sub.add_parser("first", help="choose the boot medium tried first and apply it")
-    p_first.add_argument("medium", choices=["auto", *MEDIA])
+    p_first.add_argument("medium", choices=["auto", *MEDIA, "keep"])
+    sub.add_parser("cancel", help="take back a staged update before rebooting")
     p_plan = sub.add_parser("plan", help="print the config that would be written")
     source = p_plan.add_mutually_exclusive_group(required=True)
     source.add_argument("--running", metavar="FILE", help="a bootloader config to start from")
@@ -642,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
         return apply(args.again)
     if args.command == "first":
         return set_first(args.medium)
+    if args.command == "cancel":
+        return cancel()
     if args.command == "status":
         info = status()
         if args.json:

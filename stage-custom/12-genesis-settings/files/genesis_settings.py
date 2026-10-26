@@ -25,7 +25,8 @@ SHELL_CONF_USER = os.path.expanduser("~/.config/genesis/shell.conf")
 ACCENTS = [("Azure", "#4f8cff"), ("Violet", "#7c5cff"), ("Teal", "#2fb8a6"), ("Coral", "#ff7a59"), ("Amber", "#ffb347"), ("Mint", "#3ddc97")]
 RELEASE_FILE = "/etc/custom-image-release"
 GENESIS_EEPROM = "/usr/lib/genesis/genesis-eeprom"
-BOOT_FIRST = [("auto", "Automatic: the drive this system runs from"), ("sd", "SD card"), ("nvme", "NVMe SSD"), ("usb", "USB drive")]
+BOOT_FIRST = [("auto", "Automatic: the drive this system runs from"), ("sd", "SD card"), ("nvme", "NVMe SSD"),
+              ("usb", "USB drive"), ("keep", "Keep the current order")]
 
 CSS = b"""
 window.genesis { background-color: #0e1622; color: #dfe8f0; }
@@ -370,7 +371,11 @@ class GenesisSettings(Gtk.Window):
             self.bl_order.set_text("—")
             self.bl_first.set_sensitive(False)
             self.bl_apply.set_sensitive(False)
-            self.bl_state.set_text("Bootloader settings need a Raspberry Pi 5 (%s)." % info.get("reason", "unknown"))
+            reason = info.get("reason", "unknown")
+            if reason == "not a Raspberry Pi 5":
+                self.bl_state.set_text("Bootloader settings are for a Raspberry Pi 5.")
+            else:
+                self.bl_state.set_text("Bootloader settings are not available: %s." % reason)
             return False
         self.bl_version.set_text("%s · %s" % (info.get("version", "?"), info.get("booted_from", "?")))
         self.bl_order.set_text(info.get("boot_order_text") or info.get("boot_order", "?"))

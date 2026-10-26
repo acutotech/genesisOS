@@ -332,7 +332,7 @@ assert_grep '^accent = #ff8800$' "${ROOTFS_DIR}/etc/genesis/shell.conf"
 assert_grep '^blank_timeout = 0$' "${ROOTFS_DIR}/etc/genesis/shell.conf"
 assert_grep '^enabled=0$' "${ROOTFS_DIR}/etc/genesis/bootloader.conf"
 assert_grep '^boot_first=nvme$' "${ROOTFS_DIR}/etc/genesis/bootloader.conf"
-assert_grep '^systemctl disable genesis-eeprom.service' "${CHROOT_LOG}"
+assert_grep '^systemctl enable genesis-eeprom.service$' "${CHROOT_LOG}"   # always on; enabled=0 makes it a no-op
 assert_grep '@define-color genesis_accent #ff8800;' "${ROOTFS_DIR}/usr/share/themes/GenesisGlass/gtk-3.0/gtk.css"
 assert_grep '^gtk-color-scheme = "selected_bg_color:#ff8800"$' "${ROOTFS_DIR}/usr/share/themes/GenesisGlass/gtk-2.0/gtkrc"
 # the session scripts and the installer parse, and the control tool rejects garbage

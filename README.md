@@ -368,7 +368,7 @@ bootloader takes them at the next reboot. Defaults:
 | `EEPROM_PCIE_PROBE` | `1` | Finds NVMe drives on M.2 adapters that are not HAT+ too |
 | `EEPROM_NET_INSTALL_AT_POWER_ON` | `0` | No Raspberry Pi network-install screen at every power-on; still available by holding SHIFT and when nothing boots |
 | `EEPROM_POWER_OFF_ON_HALT` | `keep` | `1` draws about 0.01 W after shutdown (some HATs dislike it) |
-| `EEPROM_CUSTOMIZE` | `1` | `0` never touches the bootloader |
+| `EEPROM_CUSTOMIZE` | `1` | `0`: the bootloader is left alone unless a boot medium is chosen later in Genesis Settings |
 
 How it changes the EEPROM, and what it leaves alone:
 
@@ -380,14 +380,21 @@ How it changes the EEPROM, and what it leaves alone:
 * It runs once. The boot after, it records whether the bootloader took the
   settings; after that it never runs again, so a change you make later with
   `raspi-config` or `rpi-eeprom-config` stays.
-* Only a Raspberry Pi 5 (not a CM5 or Pi 500), never with secure boot or
-  `FREEZE_VERSION=1`, never during the image build.
+* Only a Raspberry Pi 5 (not a CM5 or Pi 500), never with secure boot,
+  `FREEZE_VERSION=1` in any section, or `RPI_EEPROM_IMMEDIATE_UPDATE=1` in
+  `/etc/default/rpi-eeprom-update`, never during the image build, and not
+  while the clock is behind the bootloader's last update (it would ignore
+  the update). A failure after `rpi-eeprom-update` ran takes the staged
+  update back. An update an `rpi-eeprom` upgrade removed before the reboot is
+  staged once more.
+* Until the Pi that staged it reboots, the update waits on the boot medium:
+  reboot that Pi before moving the card or drive to another Raspberry Pi.
 
 On the Pi: `sudo genesis-eeprom status`; `sudo genesis-eeprom first nvme`
 (or `sd`, `usb`, `auto`) to change the boot medium later, which Genesis
-Settings → System → Boot first from also does; `sudo rpi-eeprom-update -r`
-cancels a staged update before the reboot. The previous config is kept in
-`/var/lib/genesis/eeprom/original.conf`. The bootloader cannot show a custom
+Settings → System → Boot first from also does; `sudo genesis-eeprom cancel`
+takes back a staged update before the reboot. The config from before Genesis
+first changed it is kept in `/var/lib/genesis/eeprom/original.conf`. The bootloader cannot show a custom
 logo (it has no setting for one); the Genesis splash starts with the OS.
 
 ### Boot firmware (`config.txt`, `cmdline.txt`)
@@ -577,13 +584,17 @@ imager/                         Genesis Imager (genesis_imager.py) and its tests
   for the boot menu and pick another medium, or reset the bootloader from any
   computer: Raspberry Pi Imager → Misc utility images → Bootloader → SD Card
   Boot, write it to a spare SD card, boot the Pi from it and wait for the green
-  screen. That restores Raspberry Pi's factory settings; Genesis OS then boots
-  as before (its own settings run only once and are not applied again).
+  screen. That restores Raspberry Pi's factory settings (Genesis does not apply
+  its own again by itself). Genesis OS on an SD card, a USB drive or an NVMe
+  HAT+ then boots as before; an NVMe drive on an adapter that is not HAT+
+  needs `PCIE_PROBE=1` back: boot Genesis OS from an SD card, run
+  `sudo genesis-eeprom first nvme`, reboot, and remove the card.
 * **`genesis-eeprom status` says "deferred" or "failed":** another bootloader
-  update was pending, or package rpi-eeprom has no image of the bootloader
-  version on the board (it is newer than the package). Nothing was written.
-  `sudo genesis-eeprom apply --again` tries again after the next reboot or an
-  `apt upgrade`.
+  update was pending, the clock was not set yet, or package rpi-eeprom has no
+  image of the bootloader version on the board (it is newer than the
+  package). Nothing was staged (a failure after staging takes the update back
+  and says so). `sudo genesis-eeprom apply --again` tries again, for example
+  after an `apt upgrade`.
 * **The sensor bar never appears although a box is plugged in:** run
   `/usr/sbin/i2cdetect -y 1 0x10 0x3a` as your user (`/usr/sbin` is not on a
   normal user's `PATH`). "No such file" means I2C is off

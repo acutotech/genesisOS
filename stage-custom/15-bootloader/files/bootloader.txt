@@ -8,14 +8,18 @@ bootloader applies it at the next reboot. It runs once: what you change later
 is never undone.
 
   sudo genesis-eeprom status        version, boot order, what Genesis did
-  sudo genesis-eeprom first nvme    try NVMe first (or sd, usb, auto) and apply
+  sudo genesis-eeprom first nvme    try NVMe first (or sd, usb, auto, keep) and apply
   sudo genesis-eeprom apply --again apply /etc/genesis/bootloader.conf again
-  sudo rpi-eeprom-update -r         cancel a staged update before rebooting
+  sudo genesis-eeprom cancel        take back a staged update before rebooting
+
+Until the Pi that staged it reboots, the update waits on this card or drive.
+Reboot that Pi before moving the card or drive to another Raspberry Pi: the
+next Pi 5 to boot it would take the update instead.
 
 The boot order keeps SD card, NVMe and USB in it, so any of them boots.
 "auto" puts the medium Genesis OS booted from first.
 
-The config the bootloader had before is in
+The config the bootloader had before Genesis first changed it is in
 /var/lib/genesis/eeprom/original.conf. To go back to it:
 
   sudo rpi-eeprom-config --apply /var/lib/genesis/eeprom/original.conf
@@ -24,4 +28,7 @@ If a Pi 5 no longer boots at all, its bootloader can be reset from any
 computer: in Raspberry Pi Imager choose Misc utility images > Bootloader >
 SD Card Boot, write that to a spare SD card, boot the Pi from it and wait for
 the green screen (or the steady green LED). That restores Raspberry Pi's
-factory settings; boot Genesis OS again afterwards.
+factory settings. Genesis OS on an SD card, a USB drive or an NVMe HAT+ then
+boots as before; an NVMe drive on an adapter that is not HAT+ is found again
+only once PCIE_PROBE=1 is back: boot Genesis OS from an SD card, run
+"sudo genesis-eeprom first nvme", reboot, and remove the card.

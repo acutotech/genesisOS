@@ -71,13 +71,14 @@ class BootOrder(unittest.TestCase):
         self.assertEqual(ge.boot_order_first("0x3461", 6), "0x3416")
 
     def test_orders_left_alone(self):
-        for bad in ("0xf4651", "0xf3461", "0xe461", "0x123456789", "f461", "0xzz", "0x12416121"):
+        for bad in ("0xf4651", "0xf3461", "0xe461", "0x123456789", "f461", "0xzz", "0x12416121", "0xf4f1", "0xf4e1"):
             with self.assertRaises(ge.Skip, msg=bad):
                 ge.boot_order_first(bad, 6)
 
     def test_describe(self):
         self.assertEqual(ge.describe_order("0xf416"), "NVMe → SD card → USB drive → repeat")
         self.assertEqual(ge.describe_order(None), "SD card → USB drive → repeat")
+        self.assertEqual(ge.describe_order("0xf4f1"), "SD card → restart → USB drive → repeat")   # a mid-order f is shown
 
 
 class Merge(unittest.TestCase):
@@ -158,6 +159,25 @@ class Merge(unittest.TestCase):
         self.assertIn("BOOT_ORDER=0xf416", ge.plan(FACTORY, settings, 1)[0])   # booted from SD, NVMe first anyway
 
 
+class Chroot(unittest.TestCase):
+    def test_a_normal_user_is_not_told_chroot(self):
+        real_stat = os.stat
+
+        def stat(p, *a, **k):
+            if str(p).startswith("/proc/1/root"):
+                raise PermissionError(13, "Permission denied", p)
+            return real_stat(p, *a, **k)
+
+        old_root = ge.ROOT
+        try:
+            ge.ROOT = ""
+            ge.os.stat = stat
+            self.assertFalse(ge.in_chroot())
+        finally:
+            ge.os.stat = real_stat
+            ge.ROOT = old_root
+
+
 class Settings(unittest.TestCase):
     def test_parse(self):
         s = ge.read_settings("# x\nenabled=1\nboot_first = NVMe  # comment\npcie_probe=keep\n")
@@ -202,11 +222,14 @@ elif args[:2] == ["-d", "-f"]:
     if os.environ.get("RPI_EEPROM_IMMEDIATE_UPDATE") != "0":
         sys.exit(9)   # an immediate write is never what genesis-eeprom may ask for
     rc = int(os.environ.get("STUB_UPDATE_RC", "0"))
-    if rc:
+    if rc and not os.environ.get("STUB_WRITE_FIRST"):
         sys.exit(rc)
     upd = os.path.join(bootfs, "pieeprom.upd")
     shutil.copyfile(args[2], upd)
     shutil.copyfile(args[2] + ".conf", upd + ".conf")
+    if os.environ.get("STUB_STAGE_OTHER"):
+        with open(upd + ".conf", "w") as fh:
+            fh.write("[all]\nBOOT_ORDER=0xf21\n")
     with open(upd, "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()
     with open(os.path.join(bootfs, "pieeprom.sig"), "w") as fh:
@@ -214,6 +237,8 @@ elif args[:2] == ["-d", "-f"]:
     os.makedirs(os.path.dirname(pending), exist_ok=True)
     with open(pending, "w") as fh:
         fh.write("recovery %d\n" % time.time())
+    if rc:
+        sys.exit(rc)   # e.g. copying recovery.bin failed after the update was written
 elif args == ["-r"]:
     for name in ("pieeprom.upd", "pieeprom.upd.conf", "pieeprom.sig"):
         if os.path.exists(os.path.join(bootfs, name)):
@@ -243,6 +268,8 @@ class Program(unittest.TestCase):
         self.write(os.path.join(dt, "system", "linux,revision"), be32(0xD04170), binary=True)     # Pi 5 4GB
         self.write(os.path.join(dt, "chosen", "bootloader", "boot-mode"), be32(6), binary=True)   # NVMe
         self.write(os.path.join(dt, "chosen", "bootloader", "build-timestamp"), be32(RUNNING_TS), binary=True)
+        self.write(os.path.join(dt, "serial-number"), b"a1b2c3d4\x00", binary=True)
+        self.write(os.path.join(dt, "chosen", "bootloader", "update-timestamp"), be32(1700000000), binary=True)
         self.boot_id("boot-1")
         os.makedirs(os.path.join(self.root, "boot", "firmware"))
         os.makedirs(os.path.join(self.root, "run"))
@@ -336,12 +363,14 @@ class Program(unittest.TestCase):
         self.assertIn("nothing to do", self.run_tool("apply"))
         self.assertEqual(self.calls(), before)
 
-    def test_cancelled_update_is_recorded_not_retried(self):
+    def test_a_cancel_with_genesis_eeprom_is_final(self):
         self.run_tool("apply")
+        self.run_tool("cancel")
         self.reboot(FACTORY)
-        self.run_tool("apply")
-        self.assertEqual(self.state()["status"], "failed")
-        self.assertTrue(self.done())
+        before = self.calls()
+        self.assertIn("nothing to do", self.run_tool("apply"))
+        self.assertEqual(self.calls(), before)
+        self.assertEqual(self.state()["status"], "cancelled")
 
     def test_user_change_is_respected(self):
         self.run_tool("apply")
@@ -360,7 +389,7 @@ class Program(unittest.TestCase):
         for attempt in range(1, 4):
             self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "recovery 1\n")
             self.boot_id(f"boot-{attempt}")
-            self.run_tool("apply")
+            self.run_tool("apply", rc=0 if attempt < 3 else 1)   # giving up shows as a failed unit
             self.assertEqual(self.state()["status"], "deferred" if attempt < 3 else "failed")
         self.assertTrue(self.done())
         self.assertNotIn("rpi-eeprom-update -d", self.calls())
@@ -388,11 +417,128 @@ class Program(unittest.TestCase):
         self.assertIn("skip: chroot", self.run_tool("apply"))
         self.assertEqual(self.calls(), "")
 
-    def test_frozen_and_secure_boot(self):
-        self.running(FACTORY + "FREEZE_VERSION=1\n")
+    def test_frozen_in_any_section(self):
+        for frozen in (FACTORY + "FREEZE_VERSION=1\n", FACTORY + "[pi5]\nFREEZE_VERSION=1\n",
+                       FACTORY + "[0x1234abcd]\nFREEZE_VERSION=1\n[all]\n", FACTORY + "FREEZE_VERSION=1\nFREEZE_VERSION=0\n"):
+            self.running(frozen)
+            self.run_tool("apply", "--again")
+            self.assertEqual(self.state()["status"], "skipped", frozen)
+            self.assertIn("frozen", self.state()["reason"])
+        self.assertNotIn("-d -f", self.calls())
+
+    def test_frozen_only_in_config_txt_does_not_count(self):
+        self.running(FACTORY + "[config.txt]\nFREEZE_VERSION=1\n")
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "staged")
+
+    def test_self_update_off_in_a_section_on_nvme(self):
+        self.running(FACTORY + "[pi5]\nENABLE_SELF_UPDATE=0\n")
         self.run_tool("apply")
         self.assertEqual(self.state()["status"], "skipped")
         self.assertNotIn("-d -f", self.calls())
+
+    def test_an_admins_immediate_writes_are_never_used(self):
+        self.write(os.path.join(self.root, "etc", "default", "rpi-eeprom-update"),
+                   'FIRMWARE_RELEASE_STATUS="default"\nRPI_EEPROM_IMMEDIATE_UPDATE=1\n')
+        self.run_tool("apply", RPI_EEPROM_IMMEDIATE_UPDATE="0")
+        self.assertEqual(self.state()["status"], "skipped")
+        self.assertIn("RPI_EEPROM_IMMEDIATE_UPDATE=1", self.state()["reason"])
+        self.assertNotIn("-d -f", self.calls())
+        self.write(os.path.join(self.root, "etc", "default", "rpi-eeprom-update"),
+                   'FIRMWARE_RELEASE_STATUS="default"\n#RPI_EEPROM_IMMEDIATE_UPDATE=1\n')
+        self.run_tool("apply", "--again")
+        self.assertEqual(self.state()["status"], "staged")
+
+    def test_clock_behind_the_last_update_defers(self):
+        self.write(os.path.join(self.root, "proc", "device-tree", "chosen", "bootloader", "update-timestamp"),
+                   be32(0xFFFFFFF0), binary=True)
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "deferred")
+        self.assertIn("clock", self.state()["reason"])
+        self.assertNotIn("-d -f", self.calls())
+
+    def test_failure_after_writing_takes_the_update_back(self):
+        out = self.run_tool("apply", rc=1, STUB_UPDATE_RC="2", STUB_WRITE_FIRST="1")
+        self.assertIn("taken back", out)
+        self.assertEqual(self.state()["status"], "failed")
+        self.assertIn("rpi-eeprom-update -r", self.calls())
+        self.assertFalse(os.path.exists(os.path.join(self.root, "boot", "firmware", "pieeprom.upd")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "run", "rpi-eeprom-update-pending")))
+
+    def test_wrong_staged_config_is_taken_back(self):
+        self.run_tool("apply", rc=1, STUB_STAGE_OTHER="1")
+        self.assertIn("does not hold the planned config", self.state()["reason"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "boot", "firmware", "pieeprom.upd")))
+
+    def test_an_update_removed_before_the_reboot_is_staged_once_more(self):
+        self.run_tool("apply")
+        self.reboot(FACTORY)                                     # never reached the bootloader
+        out = self.run_tool("apply")
+        self.assertIn("staging it again", out)
+        self.assertEqual((self.state()["status"], self.state()["attempts"]), ("staged", 2))
+        self.reboot(FACTORY, boot="boot-3")                      # and again: give up
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "failed")
+        self.assertTrue(self.done())
+
+    def test_original_conf_keeps_the_config_from_before_genesis(self):
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())                          # applied: the running config is Genesis's now
+        self.run_tool("apply")
+        self.run_tool("first", "usb")                            # a second change, on top of the first
+        with open(os.path.join(self.root, "var", "lib", "genesis", "eeprom", "previous.conf")) as fh:
+            self.assertIn("BOOT_ORDER=0xf416", fh.read())
+        with open(os.path.join(self.root, "var", "lib", "genesis", "eeprom", "original.conf")) as fh:
+            self.assertEqual(fh.read(), FACTORY)
+
+    def test_moved_to_another_pi_before_the_reboot(self):
+        self.run_tool("apply")
+        self.reboot("[all]\nBOOT_UART=1\nBOOT_ORDER=0xf416\nNET_INSTALL_AT_POWER_ON=0\nPCIE_PROBE=1\n")
+        self.write(os.path.join(self.root, "proc", "device-tree", "serial-number"), b"ffff0000\x00", binary=True)
+        out = self.run_tool("apply")
+        self.assertIn("another Raspberry Pi", out)
+        self.assertEqual(self.state()["status"], "unchanged")    # planned again for this board: it already has it
+        self.assertEqual(self.state()["serial"], "ffff0000")
+
+    def test_a_leftover_update_file_without_a_pending_flag_does_not_block(self):
+        self.write(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "old")
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "staged")
+
+    def test_deferrals_count_boots_not_runs(self):
+        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "recovery 1\n")
+        for _ in range(4):
+            self.run_tool("apply")                               # the same boot, four times
+        self.assertEqual((self.state()["status"], self.state()["deferrals"]), ("deferred", 1))
+
+    def test_cancel(self):
+        self.run_tool("apply")
+        self.assertIn("cancelled", self.run_tool("cancel"))
+        self.assertEqual(self.state()["status"], "cancelled")
+        self.assertTrue(self.done())
+        self.assertFalse(os.path.exists(os.path.join(self.root, "boot", "firmware", "pieeprom.upd")))
+
+    def test_a_choice_made_with_customisation_off_is_still_checked(self):
+        self.settings("enabled=0\n")
+        self.run_tool("first", "nvme")                            # Settings turns it on for this choice
+        self.assertEqual(self.state()["status"], "staged")
+        self.settings("enabled=0\n")                              # even if turned off again before the reboot
+        self.reboot(self.staged_conf())
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "applied")
+
+    def test_first_keep_applies_only_the_flags(self):
+        self.run_tool("first", "keep")
+        conf = self.staged_conf()
+        self.assertIn("BOOT_ORDER=0xf461", conf)
+        self.assertIn("PCIE_PROBE=1", conf)
+
+    def test_a_broken_settings_file_is_reported_not_crashed_or_final(self):
+        self.settings("boot_first=floppy\n")
+        out = self.run_tool("apply", rc=1)
+        self.assertIn("boot_first", out)
+        self.assertNotIn("Traceback", out)
+        self.assertFalse(self.done())
 
     def test_secure_boot(self):
         self.write(os.path.join(self.root, "proc", "device-tree", "chosen", "bootloader", "signed"), be32(1), binary=True)

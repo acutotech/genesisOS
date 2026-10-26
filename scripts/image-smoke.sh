@@ -179,6 +179,10 @@ bootloader() {
 		shift
 		if "$@"; then echo "  ok    ${what}"; else echo "  FAIL  ${what}"; failures=$((failures + 1)); fi
 	}
+	if [ ! -x "${ROOT}/usr/lib/genesis/genesis-eeprom" ]; then
+		echo "  info  no genesis-eeprom in this image (built before the bootloader settings): skipped"
+		return 0
+	fi
 	bcheck "rpi-eeprom tools are installed" test -x "${ROOT}/usr/bin/rpi-eeprom-config" -a -x "${ROOT}/usr/bin/rpi-eeprom-update"
 	image="$(find "${ROOT}${fwdir}/default" -maxdepth 1 -name 'pieeprom-*.bin' -size 2048k -printf '%f\n' 2> /dev/null | sort | tail -n 1)"
 	bcheck "a Pi 5 bootloader image is packaged (${image:-none})" test -n "${image}"
@@ -188,11 +192,16 @@ bootloader() {
 	fi
 	# shellcheck disable=SC2016  # a dpkg-query format, not a shell expansion
 	echo "  info  $(chroot "${ROOT}" dpkg-query -W -f '${Package} ${Version}  ' rpi-eeprom flashrom rpieepromab 2> /dev/null)"
+	# fixed settings, so the checks below do not depend on this build's EEPROM_* knobs
+	printf 'enabled=1\nboot_first=auto\npcie_probe=1\nnet_install_at_power_on=0\npower_off_on_halt=keep\n' > "${ROOT}/tmp/smoke-bootloader.conf"
 	if [ -n "${image}" ]; then
+		bcheck "the image's own bootloader.conf is valid" chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom plan \
+			--image "${fwdir}/default/${image}" --boot-mode 1 > /dev/null
 		echo "--- factory config of ${image} ---"
 		chroot "${ROOT}" /usr/bin/rpi-eeprom-config "${fwdir}/default/${image}" | sed 's/^/  /'
 		for mode in 1 6 4; do
-			chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom plan --image "${fwdir}/default/${image}" --boot-mode "${mode}" > "${ROOT}/tmp/plan-${mode}.conf" 2> /dev/null
+			chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom plan --settings /tmp/smoke-bootloader.conf \
+				--image "${fwdir}/default/${image}" --boot-mode "${mode}" > "${ROOT}/tmp/plan-${mode}.conf" 2> /dev/null
 			bcheck "boot mode ${mode}: genesis-eeprom plans a config" test -s "${ROOT}/tmp/plan-${mode}.conf"
 			chroot "${ROOT}" /usr/bin/rpi-eeprom-config --config "/tmp/plan-${mode}.conf" --out "/tmp/built-${mode}.bin" "${fwdir}/default/${image}" > /dev/null
 			bcheck "boot mode ${mode}: the image's rpi-eeprom-config embeds it" test "$(stat -c %s "${ROOT}/tmp/built-${mode}.bin" 2> /dev/null)" = 2097152
@@ -205,8 +214,10 @@ bootloader() {
 		bcheck "NVMe boot: NVMe first, SD and USB after" grep -qx 'BOOT_ORDER=0xf416' "${ROOT}/tmp/plan-6.conf"
 		bcheck "USB boot: USB first, SD and NVMe after" grep -qx 'BOOT_ORDER=0xf614' "${ROOT}/tmp/plan-4.conf"
 	fi
+	out="$(chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom status --json 2> /dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("reason", ""))')"
+	bcheck "it knows it runs in a chroot (${out:-no answer})" test "${out}" = chroot
 	out="$(chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom apply 2>&1)"
-	bcheck "in a chroot the service touches nothing (${out})" grep -q 'skip: chroot' <<< "${out}"
+	bcheck "in a chroot the service touches nothing (${out})" grep -qE 'skip: chroot|customisation is off' <<< "${out}"
 	bcheck "no bootloader update was staged on the card" test ! -e "${ROOT}/boot/firmware/pieeprom.upd" -a ! -e "${ROOT}/boot/firmware/recovery.bin"
 	bcheck "no bootloader state was recorded in the image" test ! -e "${ROOT}/var/lib/genesis/eeprom/state.json"
 	echo "image-smoke: bootloader: ${failures} failure(s)"
