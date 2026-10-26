@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Genesis sensors: a chip with pins. Fills only, so GTK recolours it like any symbolic icon. -->
+  <g fill="#2e3436">
+    <path fill-rule="evenodd" d="M5 3h6a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-6a2 2 0 0 1 -2 -2v-6a2 2 0 0 1 2 -2z M5.25 4.5h5.5a0.75 0.75 0 0 1 0.75 0.75v5.5a0.75 0.75 0 0 1 -0.75 0.75h-5.5a0.75 0.75 0 0 1 -0.75 -0.75v-5.5a0.75 0.75 0 0 1 0.75 -0.75z"/>
+    <rect x="6.5" y="6.5" width="3" height="3" rx="0.75"/>
+    <rect x="5.25" y="0.5" width="1.5" height="2.5" rx="0.75"/>
+    <rect x="9.25" y="0.5" width="1.5" height="2.5" rx="0.75"/>
+    <rect x="5.25" y="13" width="1.5" height="2.5" rx="0.75"/>
+    <rect x="9.25" y="13" width="1.5" height="2.5" rx="0.75"/>
+    <rect x="0.5" y="5.25" width="2.5" height="1.5" rx="0.75"/>
+    <rect x="0.5" y="9.25" width="2.5" height="1.5" rx="0.75"/>
+    <rect x="13" y="5.25" width="2.5" height="1.5" rx="0.75"/>
+    <rect x="13" y="9.25" width="2.5" height="1.5" rx="0.75"/>
+  </g>
+</svg>

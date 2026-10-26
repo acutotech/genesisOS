@@ -130,6 +130,7 @@ first_boot() {
 	check "login shell is bash" test "$(awk -F: '$3 == 1000 { print $7 }' "${ROOT}/etc/passwd")" = /bin/bash
 	check "group renamed" grep -q "^${TEST_USER}:x:1000:" "${ROOT}/etc/group"
 	check "${TEST_USER} is in sudo" grep -qE "^sudo:.*[:,]${TEST_USER}(,|$)" "${ROOT}/etc/group"
+	check "${TEST_USER} is in i2c (sensor bar)" grep -qE "^i2c:.*[:,]${TEST_USER}(,|$)" "${ROOT}/etc/group"
 	shadow="$(awk -F: -v u="${TEST_USER}" '$1 == u { print $2 }' "${ROOT}/etc/shadow")"
 	salt="$(printf '%s' "${shadow}" | cut -d'$' -f4)"
 	want="$(openssl passwd -6 -salt "rounds=100000\$${salt}" "${TEST_PASS}")"
@@ -167,6 +168,11 @@ if [ "${FIRSTBOOT}" = 1 ]; then
 	fi
 fi
 
+if [ ! -x "${ROOT}/usr/sbin/i2cdetect" ]; then
+	echo "image-smoke: FAIL the image has no /usr/sbin/i2cdetect (i2c-tools missing: the sensor bar cannot scan)" >&2
+	echo 1 > "${OUT}/result"
+	exit 1
+fi
 if [ ! -x "${ROOT}/usr/share/genesis-shell/preview.sh" ]; then
 	echo "image-smoke: FAIL the image has no /usr/share/genesis-shell/preview.sh (Genesis Shell missing?)" >&2
 	exit 1

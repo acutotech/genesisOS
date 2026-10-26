@@ -50,6 +50,18 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "blank_timeout": "600",  # seconds, 0 disables
         "lock_on_idle": "false",
     },
+    "sensors": {
+        "enabled": "true",
+        "bus": "1",                 # /dev/i2c-1, the GPIO header's I2C
+        "poll_ms": "2000",
+        "notify": "true",           # a notification when a box connects or disconnects
+        "show_disconnected": "false",  # true: the bar lists every box, dimmed when absent
+    },
+    "desktop": {
+        "icons": "true",            # files, folders and launchers of ~/Desktop on the wallpaper
+        "show_home": "true",
+        "show_trash": "true",
+    },
     "shortcuts": {
         "terminal": "lxterminal",
         "files": "pcmanfm",

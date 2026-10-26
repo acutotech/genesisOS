@@ -235,6 +235,25 @@ application windows.
 * **Notifications**: a real `org.freedesktop.Notifications` server with
   toasts (actions, images, urgency), a notification center with Do Not
   Disturb behind the clock, and an unread badge. Super+N.
+* **Sensor bar** for the NodoAI sensor boxes A-K on the I2C bus (GPIO 2/3,
+  `/dev/i2c-1`). It is hidden while no box is connected and fades in on the
+  right edge as soon as one answers, with one tile per connected box. A
+  click on a tile opens its card (I2C address, bus, connected since); click
+  it again or the × to close. Every box that connects or disconnects posts a
+  notification (several in the same scan share one), and clicking a
+  "connected" notification opens that box's card. The bus is scanned with
+  `i2cdetect -y 1 0x10 0x3a` every 2 s without blocking the shell; a box
+  counts as gone after two missed scans (about 4 s), so a lost probe does not
+  flash the bar. Boxes already connected at login show in the bar without a
+  notification. `genesis-shell-ctl sensor C` opens a card, `sensor-close`
+  closes it. Box addresses: A 0x10-0x12, B 0x14-0x16, then every 4 up to
+  K 0x38-0x3A.
+* **Desktop icons** for the files, folders and launchers in `~/Desktop`, plus
+  Home and Trash, in columns from the top-left. Each label is black or white,
+  whichever contrasts more with the part of the wallpaper right behind it
+  (WCAG relative luminance), and is chosen again when the wallpaper changes.
+  Double-click opens, right-click offers Open, Show in Files and Move to
+  Trash; a launcher (`.desktop` file) runs only if it is executable.
 * **On-screen display** for volume and brightness keys; **power dialog**
   (lock with swaylock, log out, restart, shut down) on Ctrl+Alt+Del or the
   power key; **screenshots** with Print (screen) and Shift+Print (area) into
@@ -254,7 +273,10 @@ application windows.
   from `custom.conf`) overlaid by `~/.config/genesis/shell.conf`; labwc
   config in `/etc/xdg/genesis/labwc/` (copy to `~/.config/genesis/labwc/`
   to customise keybindings or the theme); `genesis-shell-ctl --help` lists
-  the commands keybindings use.
+  the commands keybindings use. `[sensors]` sets `enabled`, `bus`, `poll_ms`,
+  `notify` and `show_disconnected` (all eleven tiles with absent boxes dimmed;
+  the bar still hides when no box is connected); `enabled` and `bus` apply at
+  the next login. `[desktop]` sets `icons`, `show_home` and `show_trash`.
 * **Testing without a Pi**: `/usr/share/genesis-shell/preview.sh DIR` starts
   the whole session on a virtual output and writes screenshots to DIR. CI
   runs it on a trixie container before building and inside the finished
@@ -387,7 +409,7 @@ Native build without Docker, on a Debian-based host with the packages from
 
 ```sh
 make lint    # shellcheck, yamllint, actionlint (if installed)
-make test    # dry-run of stage-custom against a fake root filesystem
+make test    # dry-run of stage-custom against a fake root filesystem, plus unit tests
 ```
 
 The dry-run executes every `*-run.sh` with pi-gen's variables set, captures
@@ -395,7 +417,9 @@ and syntax-checks the `on_chroot` scripts instead of running them, and
 asserts on the produced files in five scenarios (defaults, Wi-Fi with awkward
 characters, idempotence, invalid input, cloud-init disabled). It cannot tell
 you whether a package name exists in trixie or whether the image boots; the
-CI build and a real device do that.
+CI build and a real device do that. `make test` also runs
+`scripts/test-shell-logic.py` (I2C scan parsing, sensor debounce and
+notification texts, desktop label contrast) and the Genesis Imager tests.
 
 ## Repository layout
 
@@ -427,6 +451,8 @@ stage-custom/
   secrets.env.example           template for secrets.env
 branding/src/                   the logo and wallpaper the assets are generated from
 scripts/make-assets.py          regenerates icons, splash and wallpapers (needs Pillow)
+scripts/make-sensor-icons.py    regenerates the sensor box icons A-K (SVG, standard library only)
+scripts/test-shell-logic.py     unit tests for Genesis Shell logic that needs no display
 scripts/image-smoke.sh          writes a built image through Genesis Imager, runs first boot and the
                                 headless desktop test inside it
 scripts/test-firstboot.sh       genesis-firstboot against a fake root (no root rights needed)
@@ -500,6 +526,13 @@ imager/                         Genesis Imager (genesis_imager.py) and its tests
   `/usr/share/genesis-shell/preview.sh /tmp/p` over SSH to reproduce headless.
   The stock Raspberry Pi desktop is still available from the login screen's
   session menu.
+* **The sensor bar never appears although a box is plugged in:** run
+  `i2cdetect -y 1 0x10 0x3a` as your user. "No such file" means I2C is off
+  (Genesis Settings → Interfaces, then reboot); "Permission denied" means
+  your user is not in the `i2c` group (`sudo adduser $USER i2c`, log out and
+  in); an empty grid means the box does not answer (wiring, power, or an
+  address outside 0x10-0x3A). `genesis-shell-ctl state` shows what the shell
+  sees under `sensors`, including the last scan error.
 * **An app is missing from the dock or shows a generic icon:** its Wayland
   `app_id` does not match a desktop file; add it to `APP_ID_ALIASES` in
   `genesis_shell/services/apps.py`.

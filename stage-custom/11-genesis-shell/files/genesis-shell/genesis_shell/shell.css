@@ -818,3 +818,163 @@ scrollbar slider:hover {
 scrolledwindow undershoot, scrolledwindow overshoot {
     background: none;
 }
+
+/* ---- sensor bar (right edge) -------------------------------------------------- */
+.sensor-bar {
+    background-color: @glass;
+    border: 1px solid @edge_outer;
+    border-radius: 18px;
+    padding: 10px 6px;
+    background-image: linear-gradient(to bottom, alpha(#ffffff, 0.05), alpha(#ffffff, 0) 40px);
+    box-shadow: inset 0 1px 0 @highlight, inset 0 0 0 1px alpha(#ffffff, 0.09), 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 14px rgba(0, 0, 0, 0.45);
+}
+
+.sensor-bar-header {
+    color: @text_dim;
+    margin: 0 0 2px 0;
+}
+
+.sensor-bar-separator {
+    min-height: 1px;
+    background-color: alpha(@text, 0.14);
+    margin: 2px 6px 4px 6px;
+}
+
+.sensor-tile {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+    border-radius: 14px;
+    padding: 5px;
+    transition: background-color 120ms ease;
+}
+
+.sensor-tile:hover {
+    background-color: alpha(@text, 0.10);
+}
+
+.sensor-tile.selected {
+    background-color: alpha(@accent, 0.30);
+    box-shadow: inset 0 0 0 1px alpha(@accent, 0.65);
+}
+
+.sensor-tile.absent image {
+    opacity: 0.35;
+}
+
+.sensor-dot {
+    min-width: 10px;
+    min-height: 10px;
+    border-radius: 999px;
+    border: 2px solid rgba(14, 21, 32, 0.92);
+    background-color: @danger;
+}
+
+.sensor-tile.connected .sensor-dot, .sensor-card.connected .sensor-dot {
+    background-color: @success;
+}
+
+/* ---- sensor card ---------------------------------------------------------------- */
+.sensor-card {
+    padding: 12px 16px 16px 16px;
+}
+
+.sensor-card-caption {
+    color: @text_dim;
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+}
+
+.sensor-card-close {
+    padding: 6px;
+}
+
+.sensor-card-icon {
+    margin: 4px 0 10px 0;
+}
+
+.sensor-card-title {
+    font-size: 11pt;
+    font-weight: 600;
+}
+
+.sensor-status {
+    margin: 8px 0 14px 0;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background-color: alpha(@danger, 0.16);
+}
+
+.sensor-card.connected .sensor-status {
+    background-color: alpha(@success, 0.16);
+}
+
+.sensor-status label {
+    font-weight: 600;
+    color: @danger;
+}
+
+.sensor-card.connected .sensor-status label {
+    color: @success;
+}
+
+.sensor-status .sensor-dot {
+    border-width: 0;
+    min-width: 8px;
+    min-height: 8px;
+}
+
+.sensor-details {
+    padding: 10px 12px;
+    border-radius: 14px;
+    background-color: @glass_light;
+    border: 1px solid alpha(#ffffff, 0.06);
+}
+
+.sensor-value {
+    font-weight: 600;
+    font-feature-settings: "tnum";
+}
+
+/* ---- desktop icons ---------------------------------------------------------------- */
+.desktop-icon {
+    border-radius: 12px;
+    padding: 6px 2px 4px 2px;
+    transition: background-color 120ms ease;
+}
+
+.desktop-icon:hover {
+    background-color: alpha(#ffffff, 0.10);
+}
+
+.desktop-icon.on-light:hover {
+    background-color: alpha(#000000, 0.08);
+}
+
+.desktop-icon.selected {
+    background-color: alpha(@accent, 0.32);
+    box-shadow: inset 0 0 0 1px alpha(@accent, 0.70);
+}
+
+.desktop-label {
+    font-size: 9.5pt;
+    font-weight: 500;
+}
+
+/* label colour follows the wallpaper behind each icon (desktop.py measures it) */
+.desktop-label.light-text {
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85), 0 0 6px rgba(0, 0, 0, 0.55);
+}
+
+.desktop-label.dark-text {
+    color: #111418;
+    text-shadow: 0 1px 2px rgba(255, 255, 255, 0.85), 0 0 6px rgba(255, 255, 255, 0.6);
+}
+
+.desktop-icon.selected .desktop-label {
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}

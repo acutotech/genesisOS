@@ -10,6 +10,9 @@ python3-pulsectl
 python3-pywayland
 python3-cffi-backend
 python3-pil
+# sensor bar: i2cdetect for the I2C scan, librsvg so GdkPixbuf loads the SVG icons
+i2c-tools
+librsvg2-common
 libwayland-dev
 pkg-config
 libglib2.0-bin

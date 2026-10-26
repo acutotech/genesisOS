@@ -36,6 +36,8 @@ INTERFACE_XML = """
     <method name="ScreenshotTo"><arg direction="in" name="path" type="s"/><arg direction="out" name="ok" type="b"/></method>
     <method name="Notify"><arg direction="in" name="summary" type="s"/><arg direction="in" name="body" type="s"/><arg direction="out" name="id" type="u"/></method>
     <method name="ShowOsd"><arg direction="in" name="icon" type="s"/><arg direction="in" name="fraction" type="d"/><arg direction="in" name="text" type="s"/></method>
+    <method name="ShowSensor"><arg direction="in" name="letter" type="s"/><arg direction="out" name="ok" type="b"/></method>
+    <method name="HideSensor"/>
     <method name="GetState"><arg direction="out" name="json" type="s"/></method>
     <method name="Quit"/>
   </interface>
@@ -104,6 +106,11 @@ class ShellService:
                 result = GLib.Variant("(u)", (s.notifications.notify_local(args[0], args[1]),))
             elif method == "ShowOsd":
                 s.osd.show_level(args[0] or "audio-volume-high-symbolic", float(args[1]), args[2] or None)
+            elif method == "ShowSensor":
+                result = GLib.Variant("(b)", (s.sensor_bar is not None and s.sensor_bar.show_card(args[0]),))
+            elif method == "HideSensor":
+                if s.sensor_bar is not None:
+                    s.sensor_bar.card.hide()
             elif method == "GetState":
                 result = GLib.Variant("(s)", (json.dumps(s.state()),))
             elif method == "Quit":

@@ -13,7 +13,7 @@ import cairo
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, GtkLayerShell
 
 from .config import CACHE_DIR, WALLPAPER_DIRS
-from .util import ALL_EDGES, make_layer_window, monitors, spawn, which
+from .util import ALL_EDGES, make_layer_window, monitors, primary_monitor, spawn, which
 
 log = logging.getLogger("genesis.wallpaper")
 
@@ -33,7 +33,9 @@ class WallpaperWindow:
         self.area.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
         self.area.connect("draw", self._draw)
         self.area.connect("button-press-event", self._on_press)
-        self.window.add(self.area)
+        self.overlay = Gtk.Overlay()   # the desktop icons go on top of the picture
+        self.overlay.add(self.area)
+        self.window.add(self.overlay)
         self.window.show_all()
 
     def _draw(self, _widget, cr) -> bool:
@@ -47,6 +49,9 @@ class WallpaperWindow:
         return True
 
     def _on_press(self, _widget, event) -> bool:
+        desktop = getattr(self.manager.shell, "desktop", None)
+        if desktop is not None:
+            desktop.clear_selection()
         if event.button == 3:
             self.manager.context_menu(event)
             return True
@@ -66,6 +71,7 @@ class WallpaperManager:
         self.shell = shell
         self.config = shell.config
         self.windows: dict[Gdk.Monitor, WallpaperWindow] = {}
+        self.listeners: list = []   # called after the wallpaper changed (desktop label colours)
         self._original: tuple[str, GdkPixbuf.Pixbuf] | None = None
         self._scaled: dict[tuple, GdkPixbuf.Pixbuf] = {}
         self._blur: dict[tuple, cairo.ImageSurface] = {}
@@ -147,6 +153,15 @@ class WallpaperManager:
         for mon in list(self.windows):
             self.ensure_blur_async(mon)
         self._prune_blur_cache()
+        for callback in list(self.listeners):
+            try:
+                callback()
+            except Exception:  # noqa: BLE001
+                log.exception("wallpaper listener failed")
+
+    def window_for_primary(self) -> WallpaperWindow | None:
+        mon = primary_monitor()
+        return self.windows.get(mon) if mon is not None else next(iter(self.windows.values()), None)
 
     def _prune_blur_cache(self) -> None:
         """Delete blurred copies of wallpapers that are no longer in use."""

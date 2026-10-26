@@ -29,6 +29,21 @@ icon_size = 64
 blank_timeout = @BLANK_TIMEOUT@
 lock_on_idle = false
 
+[sensors]
+# NodoAI sensor boxes A-K on the I2C bus: a bar on the right edge that appears
+# while at least one box is connected, with a notification when one comes or goes
+enabled = true
+bus = 1
+poll_ms = 2000
+notify = true
+show_disconnected = false
+
+[desktop]
+# icons for the files, folders and launchers in ~/Desktop; label colour follows the wallpaper
+icons = true
+show_home = true
+show_trash = true
+
 [shortcuts]
 terminal = lxterminal
 files = pcmanfm

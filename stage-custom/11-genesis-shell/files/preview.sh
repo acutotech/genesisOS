@@ -21,6 +21,17 @@ if [ -z "${GENESIS_PREVIEW_INNER:-}" ]; then
 	export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1
 	export XDG_CURRENT_DESKTOP="Genesis:LXDE-pi" XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=genesis
 	export GENESIS_PREVIEW_INNER=1 GENESIS_SHELL_DEBUG=1
+	# no I2C here: the sensor bar reads its "bus" from this file (hex addresses)
+	export GENESIS_SENSORS_FAKE="$OUT/sensors.fake"
+	: > "$GENESIS_SENSORS_FAKE"
+	# desktop icons from a sample folder, not the user's own ~/Desktop
+	export GENESIS_DESKTOP_DIR="$OUT/Desktop"
+	mkdir -p "$GENESIS_DESKTOP_DIR/Projects" "$GENESIS_DESKTOP_DIR/Sensor Logs"
+	printf 'time,sensor,value\n' > "$GENESIS_DESKTOP_DIR/readings.csv"
+	printf 'Genesis OS notes\n' > "$GENESIS_DESKTOP_DIR/Notes.txt"
+	if [ -f /usr/share/applications/lxterminal.desktop ]; then
+		install -m 755 /usr/share/applications/lxterminal.desktop "$GENESIS_DESKTOP_DIR/Terminal.desktop"
+	fi
 	export HOME="${HOME:-/tmp}"
 	unset WAYLAND_DISPLAY DISPLAY
 	echo "preview: starting labwc headless, output in $OUT"
@@ -82,8 +93,40 @@ ctl power;           shot 06-power.png 1.5;              ctl hide
 ctl osd audio-volume-high-symbolic 0.65 "65%"; shot 07-osd.png 0.5
 if command -v lxterminal > /dev/null 2>&1; then
 	lxterminal > /dev/null 2>&1 &
+	term=$!
 	shot 08-window.png 3
+	kill "$term" 2> /dev/null || true
+	sleep 0.5
 fi
+
+# sensor boxes A (0x10), C (0x19) and H (0x2c) arrive: the bar fades in, one notification
+echo "0x10 0x19 0x2c" > "$GENESIS_SENSORS_FAKE"
+shot 09-sensors.png 2.5
+ctl state > "$OUT/state-sensors.json" 2> /dev/null
+ctl sensor C
+shot 10-sensor-card.png 1.2
+ctl state > "$OUT/state-card.json" 2> /dev/null
+ctl sensor-close
+# a light wallpaper: the desktop labels turn black
+wallpaper_was=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("wallpaper") or "")' "$OUT/state.json" 2> /dev/null)
+python3 - "$OUT/light-wallpaper.png" << 'LIGHTPNG'
+import struct, sys, zlib
+w, h = 1920, 1080
+rows = []
+for y in range(h):
+    t = y / (h - 1)
+    rows.append(b"\x00" + bytes((int(236 - 30 * t), int(232 - 24 * t), int(222 - 12 * t))) * w)
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"".join(rows), 6)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+LIGHTPNG
+ctl wallpaper "$OUT/light-wallpaper.png" && shot 11-desktop-light.png 2.5
+ctl state > "$OUT/state-light.json" 2> /dev/null
+[ -n "$wallpaper_was" ] && ctl wallpaper "$wallpaper_was" 2> /dev/null
+# the boxes leave: after two missed scans the bar fades out again
+: > "$GENESIS_SENSORS_FAKE"
+sleep 2.5
 ctl state > "$OUT/state-final.json" 2> /dev/null
 cp "${XDG_CACHE_HOME:-$HOME/.cache}/genesis/session.log" "$OUT/session.log" 2> /dev/null || true
 echo "--- session.log (tail) ---"
@@ -183,7 +226,8 @@ for name in sorted(os.listdir(out)):
     if w < 1280:
         failures.append(f"{name}: unexpected size {w}x{h}")
 
-for required in ("01-desktop.png", "02-launcher.png", "03-control-center.png", "04-notification-center.png", "05-toast.png", "06-power.png"):
+for required in ("01-desktop.png", "02-launcher.png", "03-control-center.png", "04-notification-center.png", "05-toast.png", "06-power.png",
+                 "09-sensors.png", "10-sensor-card.png", "11-desktop-light.png"):
     if not os.path.exists(os.path.join(out, required)):
         failures.append(f"missing {required}")
 
@@ -199,6 +243,35 @@ try:
         failures.append("application index empty")
 except Exception as exc:  # noqa: BLE001
     failures.append(f"state unreadable: {exc}")
+
+
+def load(name):
+    with open(os.path.join(out, name), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+try:
+    first, sensors, card, light, final = (load(n) for n in ("state.json", "state-sensors.json", "state-card.json", "state-light.json", "state-final.json"))
+    print("sensors:", json.dumps(sensors["sensors"]), "card:", card["sensors"]["card"], "final bar:", final["sensors"]["bar_visible"])
+    print("desktop (dark wallpaper):", json.dumps(sensors["desktop"]), "(light wallpaper):", json.dumps(light["desktop"]))
+    if first["sensors"]["bar_visible"]:
+        failures.append("sensor bar shown although no box was connected")
+    if not sensors["sensors"]["bar_visible"] or sorted(sensors["sensors"]["connected"]) != ["A", "C", "H"]:
+        failures.append(f"sensor bar did not show boxes A, C, H: {sensors['sensors']}")
+    if sensors["notifications"] < 1:
+        failures.append("no notification for the connected boxes")
+    if card["sensors"]["card"] != "C":
+        failures.append(f"sensor card for C not shown: {card['sensors']}")
+    if final["sensors"]["bar_visible"]:
+        failures.append("sensor bar still shown after every box left")
+    if sensors["desktop"]["icons"] < 4:
+        failures.append(f"desktop icons missing: {sensors['desktop']}")
+    if sensors["desktop"]["light_text"] != sensors["desktop"]["icons"]:
+        failures.append(f"labels on the dark wallpaper are not all white: {sensors['desktop']}")
+    if light["desktop"]["dark_text"] != light["desktop"]["icons"]:
+        failures.append(f"labels on the light wallpaper are not all black: {light['desktop']}")
+except Exception as exc:  # noqa: BLE001
+    failures.append(f"sensor/desktop state unreadable: {exc}")
 
 if failures:
     print("preview: FAIL")

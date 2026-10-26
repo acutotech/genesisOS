@@ -82,6 +82,7 @@ class Notification:
         self.timeout = timeout
         self.time = time.time()
         self.read = False
+        self.on_action = None   # the shell's own notifications: called with the action key
 
     @staticmethod
     def _pixbuf(hints: dict) -> GdkPixbuf.Pixbuf | None:
@@ -208,12 +209,14 @@ class NotificationService(Service):
     def find(self, nid: int) -> Notification | None:
         return next((n for n in self.items if n.id == nid), None) or self.toasts.find(nid)
 
-    def post(self, app_name: str, app_icon: str, summary: str, body: str, actions: list, hints: dict, timeout: int = -1, replaces_id: int = 0) -> int:
+    def post(self, app_name: str, app_icon: str, summary: str, body: str, actions: list, hints: dict, timeout: int = -1,
+             replaces_id: int = 0, on_action=None) -> int:
         existing = self.find(replaces_id) if replaces_id else None
         nid = existing.id if existing is not None else self._next_id
         if existing is None:
             self._next_id = self._next_id % 0xFFFFFFF + 1
         n = Notification(nid, app_name, app_icon, summary, body, actions, hints, timeout)
+        n.on_action = on_action
         if existing is not None:
             if existing in self.items:
                 self.items.remove(existing)
@@ -239,7 +242,13 @@ class NotificationService(Service):
         self.notify()
 
     def invoke(self, n: Notification, key: str) -> None:
-        self._emit("ActionInvoked", GLib.Variant("(us)", (n.id, key)))
+        if n.on_action is not None:
+            try:
+                n.on_action(key)
+            except Exception:  # noqa: BLE001
+                log.exception("notification action failed")
+        else:
+            self._emit("ActionInvoked", GLib.Variant("(us)", (n.id, key)))
         if not n.resident:
             self.close(n, REASON_DISMISSED)
 

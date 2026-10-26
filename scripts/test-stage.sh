@@ -216,6 +216,11 @@ assert_grep '@define-color genesis_accent #4f8cff;' "${ROOTFS_DIR}/usr/share/the
 # Genesis Shell + session
 assert_file "${ROOTFS_DIR}/usr/lib/genesis-shell/genesis_shell/app.py"
 assert_file "${ROOTFS_DIR}/usr/lib/genesis-shell/genesis_shell/shell.css"
+for letter in a b c d e f g h i j k; do
+	assert_file "${ROOTFS_DIR}/usr/lib/genesis-shell/genesis_shell/icons/sensors/sensor-${letter}.svg"
+done
+assert_file "${ROOTFS_DIR}/usr/lib/genesis-shell/genesis_shell/icons/genesis-sensors-symbolic.svg"
+assert_grep '^i2c-tools$' "${STAGE_DIR}/11-genesis-shell/00-packages"
 assert_file "${ROOTFS_DIR}/usr/share/genesis-shell/protocols/wlr-foreign-toplevel-management-unstable-v1.xml"
 for prog in genesis-session genesis-session-start genesis-respawn genesis-fallback genesis-shell genesis-shell-ctl genesis-xdg-autostart genesis-idle; do
 	assert_exec "${ROOTFS_DIR}/usr/bin/${prog}"

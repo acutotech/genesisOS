@@ -30,9 +30,10 @@ lint-actions: ## actionlint the GitHub workflow (skipped if actionlint is not in
 	@if command -v actionlint >/dev/null 2>&1; then actionlint -color; \
 	else echo "actionlint not installed, skipping (https://github.com/rhysd/actionlint)"; fi
 
-test: ## Dry-run the custom stage, the first-boot setup and Genesis Imager (no root, no Docker)
+test: ## Dry-run the custom stage and first-boot setup; unit-test Genesis Shell logic and Genesis Imager (no root, no Docker)
 	scripts/test-stage.sh
 	scripts/test-firstboot.sh
+	python3 scripts/test-shell-logic.py
 	python3 -m unittest discover -s imager -v
 
 build: ## Build the image with Docker (see scripts/build-local.sh --help)

@@ -21,18 +21,21 @@ ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 
 from .config import CACHE_DIR, Config  # noqa: E402
 from .control_center import ControlCenter  # noqa: E402
+from .desktop import DesktopIcons  # noqa: E402
 from .ipc import ShellService  # noqa: E402
 from .launcher import Launcher  # noqa: E402
 from .notifications import NotificationCenter, NotificationService  # noqa: E402
 from .osd import Osd  # noqa: E402
 from .panel import Panel  # noqa: E402
 from .power import PowerDialog  # noqa: E402
+from .sensors import SensorBar  # noqa: E402
 from .services.apps import AppIndex  # noqa: E402
 from .services.audio import AudioService  # noqa: E402
 from .services.battery import BatteryService  # noqa: E402
 from .services.bluetooth import BluetoothService  # noqa: E402
 from .services.brightness import BrightnessService  # noqa: E402
 from .services.network import NetworkService  # noqa: E402
+from .services.sensors import SensorService  # noqa: E402
 from .services.toplevels import ToplevelService  # noqa: E402
 from .theme import Theme  # noqa: E402
 from .util import monitors, pictures_dir, primary_monitor, run_async, spawn, which  # noqa: E402
@@ -59,15 +62,18 @@ class Shell:
         self.brightness = BrightnessService()
         self.toplevels = ToplevelService()
         self.notifications = NotificationService(self)
+        self.sensors = SensorService(self.config, run_async)
 
         # windows
         self.wallpaper = WallpaperManager(self)
+        self.desktop = self._optional("desktop icons", DesktopIcons)
         self.panels: dict[Gdk.Monitor, Panel] = {}
         self.launcher = Launcher(self)
         self.control_center = ControlCenter(self)
         self.notification_center = NotificationCenter(self, "genesis-notification-center")
         self.osd = Osd(self)
         self.power = PowerDialog(self)
+        self.sensor_bar = self._optional("sensor bar", SensorBar)
         self.rebuild_panels()
         self.ipc = ShellService(self)
 
@@ -82,6 +88,14 @@ class Shell:
         display.connect("monitor-removed", lambda *_a: self.rebuild_panels())
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, self._on_signal, sig)
+
+    def _optional(self, what: str, factory):
+        """Build an extra component; if it fails the shell runs on without it."""
+        try:
+            return factory(self)
+        except Exception:  # noqa: BLE001
+            log.exception("%s failed to start; the shell runs on without it", what)
+            return None
 
     # -- lifecycle ------------------------------------------------------------------
     def run(self) -> int:
@@ -141,6 +155,8 @@ class Shell:
         for win in (self.notifications.toasts.window, self.osd.window):
             if win.get_visible():
                 win.queue_draw()
+        if self.sensor_bar is not None:
+            self.sensor_bar.redraw()
 
     def _on_config(self) -> None:
         changed = getattr(self.config, "changed", {"appearance", "panel"})
@@ -316,6 +332,8 @@ class Shell:
             },
             "wallpaper": self.wallpaper.path(),
             "apps": len(self.apps.entries),
+            "sensors": self.sensor_bar.describe() if self.sensor_bar is not None else None,
+            "desktop": self.desktop.describe() if self.desktop is not None else None,
         }
 
 
