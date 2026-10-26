@@ -241,9 +241,9 @@ application windows.
   column scrolls if more boxes are connected than fit the screen). A click
   on a tile opens its card (I2C address, bus, connected since); click it
   again or the × to close. Every box that connects or disconnects posts a
-  notification (several in the same scan share one), and clicking a
-  "connected" notification, as a toast or in the notification center, opens
-  that box's card. The bus is scanned with
+  notification (several in the same scan share one), and clicking the
+  "connected" notification of a single box, as a toast or in the notification
+  center, opens its card. The bus is scanned with
   `i2cdetect -y 1 0x10 0x3a` every 2 s without blocking the shell; a box
   counts as gone after two missed scans (about 4 s), so a lost probe does not
   flash the bar. Boxes already connected at login show in the bar without a

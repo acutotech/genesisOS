@@ -297,6 +297,10 @@ class SensorBar:
         if display is not None:
             display.connect("monitor-added", lambda *_a: GLib.idle_add(self.rebind))
             display.connect("monitor-removed", lambda *_a: GLib.idle_add(self.rebind))
+        screen = Gdk.Screen.get_default()
+        if screen is not None:
+            # a new mode, scale or rotation on the same output adds and removes no monitor
+            screen.connect("monitors-changed", lambda *_a: GLib.idle_add(self.refit))
         self._fit()
         self.refresh()
 
@@ -328,11 +332,21 @@ class SensorBar:
 
     def _size_column(self) -> None:
         # the layer surface takes the window's minimum size, so the column's minimum is what it shows:
-        # every tile, or as many as there is room for (the rest scroll)
+        # every tile, or as many as there is room for, the last one cut in half so it is clear the rest scroll
         _min, natural = self.tiles_box.get_preferred_height()
+        shown = natural
+        if natural > self.room:
+            shown = max(TILE_STEP // 2, ((self.room + 6) // TILE_STEP) * TILE_STEP - TILE_STEP // 2)
         self.scroller.set_min_content_height(-1)
-        self.scroller.set_max_content_height(self.room)
-        self.scroller.set_min_content_height(max(1, min(natural, self.room)))
+        self.scroller.set_max_content_height(max(shown, self.room))
+        self.scroller.set_min_content_height(max(1, shown))
+
+    def refit(self) -> bool:
+        """The screen changed size (mode, scale, rotation) or the panel moved: size the column again."""
+        self._fit()
+        if self.card.visible:
+            self.card.place()
+        return False
 
     def _on_resized(self, _win, _alloc) -> None:
         if self.card.visible:
@@ -347,6 +361,9 @@ class SensorBar:
 
     def rebind(self) -> bool:
         """Follow the primary monitor after outputs come and go."""
+        lost = self.visible and not self.window.get_mapped()   # its surface was closed
+        if primary_monitor() is self.monitor and not lost:
+            return self.refit()
         self.monitor = primary_monitor()
         if self.monitor is not None:
             GtkLayerShell.set_monitor(self.window, self.monitor)
@@ -431,6 +448,10 @@ class SensorBar:
         tile = self.tiles.get(letter)
         if not self.visible or tile is None or letter not in self.letters_shown():
             return False
+        alloc = tile.get_allocation()
+        if alloc.height > 1:
+            # a tile scrolled out of the column comes into view first, so the card sits beside it
+            self.scroller.get_vadjustment().clamp_page(alloc.y, alloc.y + alloc.height)
         self.card.show_for(letter, tile)
         return True
 

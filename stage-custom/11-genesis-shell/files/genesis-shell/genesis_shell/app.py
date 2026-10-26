@@ -175,7 +175,7 @@ class Shell:
         if self.desktop is not None:
             self.desktop.rebuild()
         if self.sensor_bar is not None:
-            self.sensor_bar.rebind()
+            self.sensor_bar.refit()
             self.sensor_bar.refresh()
 
     # -- monitors ------------------------------------------------------------------------

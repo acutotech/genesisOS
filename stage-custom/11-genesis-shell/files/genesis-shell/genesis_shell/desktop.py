@@ -197,6 +197,14 @@ class DesktopIcon(Gtk.EventBox):
         self.measured: tuple[int, int, int, int] | None = None   # the label box the tone was measured on
         self.label.connect("size-allocate", lambda *_a: desktop.queue_recolour())
         self.connect("button-press-event", self._pressed)
+        # GTK 3 sets :hover only on widgets that track it themselves (buttons, rows), never on an event box
+        self.connect("enter-notify-event", lambda w, _e: w.set_state_flags(Gtk.StateFlags.PRELIGHT, False) or False)
+        self.connect("leave-notify-event", self._left)
+
+    def _left(self, _widget, event) -> bool:
+        if event.detail != Gdk.NotifyType.INFERIOR:
+            self.unset_state_flags(Gtk.StateFlags.PRELIGHT)
+        return False
 
     def label_box(self, fixed: Gtk.Widget) -> tuple[int, int, int, int]:
         """Where the label's text is, in desktop coordinates (an estimate until it is laid out)."""
@@ -231,25 +239,24 @@ class DesktopIcons:
         self.shell = shell
         self.config = shell.config
         self.folder = desktop_dir()
-        self.fixed = Gtk.Fixed()
-        add_class(self.fixed, "desktop-icons")
+        self.fixed = self._new_fixed()
         self.icons: list[DesktopIcon] = []
         self.host = None
         self._rebuild_source = 0
         self._recolour_source = 0
         self._file_monitor: Gio.FileMonitor | None = None
         self._trash_monitor: Gio.FileMonitor | None = None
+        self._trash_unwatchable = False
         self.trash_full = False
         self.selected_key: str | None = None
         self.laid_out_for = (0, 0)
-        self.fixed.connect("size-allocate", self._on_resized)
         if self.enabled():
             try:
                 os.makedirs(self.folder, exist_ok=True)
             except OSError as exc:
                 log.warning("cannot create %s: %s", self.folder, exc)
         self._watch()
-        self._watch_trash()
+        self._sync_trash_watch()
         shell.wallpaper.listeners.append(self.recolour)
         self.config.connect(self._on_config)
         display = Gdk.Display.get_default()
@@ -262,12 +269,22 @@ class DesktopIcons:
         return self.config.getbool("desktop", "icons")
 
     # -- hosting --------------------------------------------------------------------------
+    def _new_fixed(self) -> Gtk.Fixed:
+        fixed = Gtk.Fixed()
+        add_class(fixed, "desktop-icons")
+        fixed.connect("size-allocate", self._on_resized)
+        return fixed
+
     def _reattach(self) -> bool:
         win = self.shell.wallpaper.window_for_primary()
         if win is not self.host:
             parent = self.fixed.get_parent()
             if parent is not None:
                 parent.remove(self.fixed)
+            # a new container: the old one may have been destroyed with its window (output unplugged),
+            # and a destroyed widget has lost its signal handlers
+            self.fixed = self._new_fixed()
+            self.icons = []
             self.host = win
             if win is not None:
                 win.overlay.add_overlay(self.fixed)
@@ -292,15 +309,46 @@ class DesktopIcons:
             self._queue_rebuild()
         elif event in (E.CHANGES_DONE_HINT, E.ATTRIBUTE_CHANGED) and (file.get_basename() or "").endswith(".desktop"):
             self._queue_rebuild()
+        elif event == E.CHANGES_DONE_HINT:
+            self._check_icon(file)
 
-    def _watch_trash(self) -> None:
-        """Follow the Trash (through gvfs) so its icon shows whether it is empty."""
+    def _check_icon(self, file: Gio.File) -> None:
+        """A written file keeps its icon unless its content changed its type (an empty file that got text)."""
+        path = file.get_path()
+        item = next((icon.item for icon in self.icons if icon.item.path == path), None)
+        if item is None or item.kind != "file":
+            return
+        file.query_info_async("standard::icon", Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, None,
+                              lambda f, res: self._icon_checked(f, res, item))
+
+    def _icon_checked(self, file: Gio.File, result, item: DesktopItem) -> None:
         try:
-            self._trash_monitor = Gio.File.new_for_uri("trash:///").monitor_directory(Gio.FileMonitorFlags.NONE, None)
-            self._trash_monitor.connect("changed", lambda *_a: self._count_trash())
-        except GLib.Error as exc:
-            log.debug("cannot watch the Trash: %s", exc)
+            gicon = file.query_info_finish(result).get_icon()
+        except GLib.Error:
+            return
+        if gicon is not None and (item.gicon is None or not gicon.equal(item.gicon)):
+            self._queue_rebuild()
+
+    def _sync_trash_watch(self) -> None:
+        """Watch the Trash only while its icon is on the desktop."""
+        wanted = self.enabled() and self.config.getbool("desktop", "show_trash")
+        if wanted and self._trash_monitor is None and not self._trash_unwatchable:
+            GLib.idle_add(self._watch_trash)   # after the panels: through gvfs this is a D-Bus round trip
+        elif not wanted and self._trash_monitor is not None:
+            self._trash_monitor.cancel()
+            self._trash_monitor = None
+
+    def _watch_trash(self) -> bool:
+        """Follow the Trash (through gvfs) so its icon shows whether it is empty."""
+        if self._trash_monitor is None:
+            try:
+                self._trash_monitor = Gio.File.new_for_uri("trash:///").monitor_directory(Gio.FileMonitorFlags.NONE, None)
+                self._trash_monitor.connect("changed", lambda *_a: self._count_trash())
+            except GLib.Error as exc:
+                self._trash_unwatchable = True
+                log.debug("cannot watch the Trash: %s", exc)
         self._count_trash()
+        return False
 
     def _count_trash(self) -> None:
         try:
@@ -330,6 +378,8 @@ class DesktopIcons:
 
     def _on_config(self) -> None:
         changed = getattr(self.config, "changed", {"desktop", "panel"})
+        if "desktop" in changed:
+            self._sync_trash_watch()
         if "desktop" in changed or "panel" in changed:
             self.rebuild()
 
@@ -340,9 +390,18 @@ class DesktopIcons:
             return thickness + EDGE, EDGE
         return EDGE, thickness + EDGE
 
-    def _on_resized(self, _widget, alloc) -> None:
+    def screen_size(self) -> tuple[int, int]:
+        """The size the wallpaper is drawn at; never the icons' own container, which grows with them."""
+        area = self.host.area
+        width, height = area.get_allocated_width(), area.get_allocated_height()
+        if width <= 1 or height <= 1:
+            geo = self.host.monitor.get_geometry()
+            width, height = geo.width, geo.height
+        return width, height
+
+    def _on_resized(self, _widget, _alloc) -> None:
         # a new mode or scale on the same monitor: lay the icons out again for the new size
-        if self.icons and alloc.width > 1 and (alloc.width, alloc.height) != self.laid_out_for:
+        if self.icons and self.host is not None and self.screen_size() != self.laid_out_for:
             self._queue_rebuild()
 
     def rebuild(self) -> None:
@@ -353,11 +412,7 @@ class DesktopIcons:
             return
         items = list_items(self.folder, self.config.getbool("desktop", "show_home"), self.config.getbool("desktop", "show_trash"),
                            self.trash_full)
-        width, height = self.fixed.get_allocated_width(), self.fixed.get_allocated_height()
-        if width <= 1 or height <= 1:
-            geo = self.host.monitor.get_geometry()
-            width, height = geo.width, geo.height
-        self.laid_out_for = (width, height)
+        width, height = self.laid_out_for = self.screen_size()
         top, bottom = self.margins()
         for item, (x, y) in zip(items, grid_positions(len(items), width, height, top, bottom)):
             icon = DesktopIcon(self, item)

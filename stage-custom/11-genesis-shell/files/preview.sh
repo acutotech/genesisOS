@@ -34,14 +34,36 @@ if [ -z "${GENESIS_PREVIEW_INNER:-}" ]; then
 	fi
 	export HOME="${HOME:-/tmp}"
 	# a private copy of the user's settings: the preview switches the wallpaper, and over
-	# SSH the user's live desktop watches the real shell.conf
+	# SSH the user's live desktop watches the real shell.conf. -L: a linked folder
+	# (dotfile managers) is copied, never written through.
 	user_config="${XDG_CONFIG_HOME:-$HOME/.config}"
-	export XDG_CONFIG_HOME="$OUT/config"
-	rm -rf "$OUT/config"
-	mkdir -p "$XDG_CONFIG_HOME"
-	for sub in genesis gtk-3.0; do
-		if [ -d "$user_config/$sub" ]; then cp -a "$user_config/$sub" "$XDG_CONFIG_HOME/"; fi
+	XDG_CONFIG_HOME="$(mktemp -d "$OUT/config.XXXXXX")" || exit 1
+	export XDG_CONFIG_HOME
+	for sub in genesis gtk-3.0 lxterminal; do
+		if [ -d "$user_config/$sub" ]; then cp -RL "$user_config/$sub" "$XDG_CONFIG_HOME/" 2> /dev/null || true; fi
 	done
+	# what the checks below rely on, whatever the user turned off
+	python3 - "$XDG_CONFIG_HOME/genesis/shell.conf" << 'CONF'
+import configparser, os, sys
+path = sys.argv[1]
+conf = configparser.RawConfigParser(strict=False)
+conf.optionxform = str
+try:
+    conf.read(path, encoding="utf-8")
+except (configparser.Error, UnicodeDecodeError):
+    conf = configparser.RawConfigParser()
+    conf.optionxform = str
+wanted = {"sensors": {"enabled": "true", "notify": "true", "show_disconnected": "false"},
+          "desktop": {"icons": "true", "show_home": "true", "show_trash": "true"}}
+for section, values in wanted.items():
+    if not conf.has_section(section):
+        conf.add_section(section)
+    for key, value in values.items():
+        conf.set(section, key, value)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8") as fh:
+    conf.write(fh)
+CONF
 	unset WAYLAND_DISPLAY DISPLAY
 	echo "preview: starting labwc headless, output in $OUT"
 	# a private session bus, the compositor, and this script as the session client
@@ -57,6 +79,7 @@ if [ -z "${GENESIS_PREVIEW_INNER:-}" ]; then
 		echo "preview: FAIL the session client never reported a result (compositor exit status $status)"
 		status=1
 	fi
+	rm -rf "$XDG_CONFIG_HOME"   # the private copy made above (mktemp), nothing of the user's
 	echo "preview: finished with status $status"
 	echo "===== compositor.log (labwc + session client, without the picture) ====="
 	sed -e '/BEGIN CONTACT SHEET BASE64/,/END CONTACT SHEET BASE64/d' "$OUT/compositor.log" || true

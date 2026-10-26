@@ -964,7 +964,9 @@ scrolledwindow undershoot, scrolledwindow overshoot {
     background-color: alpha(#000000, 0.08);
 }
 
-.desktop-icon.selected .desktop-icon-box {
+/* listed after the hover rules and as specific: a selected icon under the pointer stays selected-looking */
+.desktop-icon.selected .desktop-icon-box, .desktop-icon.selected:hover .desktop-icon-box,
+.desktop-icon.on-light.selected:hover .desktop-icon-box {
     background-color: alpha(@accent, 0.30);
     box-shadow: inset 0 0 0 1px alpha(@accent, 0.75);
 }
