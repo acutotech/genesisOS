@@ -168,6 +168,56 @@ if [ "${FIRSTBOOT}" = 1 ]; then
 	fi
 fi
 
+# ------------------------------------------------------------------ Pi 5 bootloader settings
+# No Pi here, so nothing is flashed: the image's own rpi-eeprom-config embeds what
+# genesis-eeprom plans into the packaged bootloader image and reads it back, and the
+# service itself must refuse to run in this chroot.
+bootloader() {
+	local failures=0 fwdir=/usr/lib/firmware/raspberrypi/bootloader-2712 image mode out
+	bcheck() { # description, then a command that must succeed
+		local what="$1"
+		shift
+		if "$@"; then echo "  ok    ${what}"; else echo "  FAIL  ${what}"; failures=$((failures + 1)); fi
+	}
+	bcheck "rpi-eeprom tools are installed" test -x "${ROOT}/usr/bin/rpi-eeprom-config" -a -x "${ROOT}/usr/bin/rpi-eeprom-update"
+	image="$(find "${ROOT}${fwdir}/default" -maxdepth 1 -name 'pieeprom-*.bin' -size 2048k -printf '%f\n' 2> /dev/null | sort | tail -n 1)"
+	bcheck "a Pi 5 bootloader image is packaged (${image:-none})" test -n "${image}"
+	bcheck "genesis-eeprom.service is enabled" test -L "${ROOT}/etc/systemd/system/multi-user.target.wants/genesis-eeprom.service"
+	if [ -e "${ROOT}/etc/systemd/system/multi-user.target.wants/rpi-eeprom-update.service" ]; then
+		echo "  info  rpi-eeprom-update.service is enabled (genesis-eeprom runs after it)"
+	fi
+	# shellcheck disable=SC2016  # a dpkg-query format, not a shell expansion
+	echo "  info  $(chroot "${ROOT}" dpkg-query -W -f '${Package} ${Version}  ' rpi-eeprom flashrom rpieepromab 2> /dev/null)"
+	if [ -n "${image}" ]; then
+		echo "--- factory config of ${image} ---"
+		chroot "${ROOT}" /usr/bin/rpi-eeprom-config "${fwdir}/default/${image}" | sed 's/^/  /'
+		for mode in 1 6 4; do
+			chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom plan --image "${fwdir}/default/${image}" --boot-mode "${mode}" > "${ROOT}/tmp/plan-${mode}.conf" 2> /dev/null
+			bcheck "boot mode ${mode}: genesis-eeprom plans a config" test -s "${ROOT}/tmp/plan-${mode}.conf"
+			chroot "${ROOT}" /usr/bin/rpi-eeprom-config --config "/tmp/plan-${mode}.conf" --out "/tmp/built-${mode}.bin" "${fwdir}/default/${image}" > /dev/null
+			bcheck "boot mode ${mode}: the image's rpi-eeprom-config embeds it" test "$(stat -c %s "${ROOT}/tmp/built-${mode}.bin" 2> /dev/null)" = 2097152
+			chroot "${ROOT}" /usr/bin/rpi-eeprom-config "/tmp/built-${mode}.bin" > "${ROOT}/tmp/readback-${mode}.conf"
+			bcheck "boot mode ${mode}: the embedded config reads back unchanged" cmp -s "${ROOT}/tmp/plan-${mode}.conf" "${ROOT}/tmp/readback-${mode}.conf"
+		done
+		echo "--- planned for an NVMe boot ---"
+		sed 's/^/  /' "${ROOT}/tmp/plan-6.conf"
+		bcheck "SD boot: SD card first" grep -qx 'BOOT_ORDER=0xf461' "${ROOT}/tmp/plan-1.conf"
+		bcheck "NVMe boot: NVMe first, SD and USB after" grep -qx 'BOOT_ORDER=0xf416' "${ROOT}/tmp/plan-6.conf"
+		bcheck "USB boot: USB first, SD and NVMe after" grep -qx 'BOOT_ORDER=0xf614' "${ROOT}/tmp/plan-4.conf"
+	fi
+	out="$(chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom apply 2>&1)"
+	bcheck "in a chroot the service touches nothing (${out})" grep -q 'skip: chroot' <<< "${out}"
+	bcheck "no bootloader update was staged on the card" test ! -e "${ROOT}/boot/firmware/pieeprom.upd" -a ! -e "${ROOT}/boot/firmware/recovery.bin"
+	bcheck "no bootloader state was recorded in the image" test ! -e "${ROOT}/var/lib/genesis/eeprom/state.json"
+	echo "image-smoke: bootloader: ${failures} failure(s)"
+	[ "${failures}" -eq 0 ]
+}
+if ! bootloader; then
+	echo "image-smoke: FAIL bootloader settings" >&2
+	echo 1 > "${OUT}/result"
+	exit 1
+fi
+
 if [ ! -x "${ROOT}/usr/sbin/i2cdetect" ]; then
 	echo "image-smoke: FAIL the image has no /usr/sbin/i2cdetect (i2c-tools missing: the sensor bar cannot scan)" >&2
 	echo 1 > "${OUT}/result"

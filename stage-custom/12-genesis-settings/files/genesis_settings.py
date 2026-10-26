@@ -6,6 +6,7 @@ Privileged changes go through /usr/lib/genesis-settings/genesis-helper via
 sudo (passwordless, or with the Raspberry Pi askpass prompt) or pkexec.
 """
 import configparser
+import json
 import os
 import shutil
 import subprocess
@@ -23,6 +24,8 @@ SHELL_CONF_SYSTEM = "/etc/genesis/shell.conf"
 SHELL_CONF_USER = os.path.expanduser("~/.config/genesis/shell.conf")
 ACCENTS = [("Azure", "#4f8cff"), ("Violet", "#7c5cff"), ("Teal", "#2fb8a6"), ("Coral", "#ff7a59"), ("Amber", "#ffb347"), ("Mint", "#3ddc97")]
 RELEASE_FILE = "/etc/custom-image-release"
+GENESIS_EEPROM = "/usr/lib/genesis/genesis-eeprom"
+BOOT_FIRST = [("auto", "Automatic: the drive this system runs from"), ("sd", "SD card"), ("nvme", "NVMe SSD"), ("usb", "USB drive")]
 
 CSS = b"""
 window.genesis { background-color: #0e1622; color: #dfe8f0; }
@@ -322,7 +325,81 @@ class GenesisSettings(Gtk.Window):
         power_box.pack_start(reboot, False, False, 0)
         power_box.pack_start(shutdown, False, False, 0)
         power = card([Row("Power", "Restart or switch off the device", power_box)])
-        return page("System", identity, boot, power)
+        return page("System", identity, boot, self.build_bootloader(), power)
+
+    # ---- Raspberry Pi 5 bootloader (EEPROM) ------------------------------------------
+    def build_bootloader(self):
+        self.bl_version = Gtk.Label(label="…", xalign=1)
+        self.bl_order = Gtk.Label(label="…", xalign=1, wrap=True, max_width_chars=34)
+        self.bl_first = Gtk.ComboBoxText()
+        for key, text in BOOT_FIRST:
+            self.bl_first.append(key, text)
+        self.bl_first.set_active_id("auto")
+        self.bl_apply = Gtk.Button(label="Apply")
+        self.bl_apply.get_style_context().add_class("pill")
+        self.bl_apply.connect("clicked", self.on_bootloader_apply)
+        first_box = Gtk.Box(spacing=8)
+        first_box.pack_start(self.bl_first, False, False, 0)
+        first_box.pack_start(self.bl_apply, False, False, 0)
+        self.bl_state = Gtk.Label(label="", xalign=0, wrap=True)
+        self.bl_state.get_style_context().add_class("row-subtitle")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.pack_start(card([
+            Row("Bootloader", "Raspberry Pi 5 EEPROM version, and the drive this system started from", self.bl_version),
+            Row("Boot order", "Drives are tried in this order; SD card, NVMe and USB all stay bootable", self.bl_order),
+            Row("Boot first from", "Written to the EEPROM at the next reboot", first_box),
+        ]), False, False, 0)
+        box.pack_start(self.bl_state, False, False, 0)
+        self.refresh_bootloader()
+        return box
+
+    def refresh_bootloader(self):
+        def work():
+            result = sh([GENESIS_EEPROM, "status", "--json"], timeout=30)
+            try:
+                info = json.loads(result.stdout)
+            except ValueError:
+                info = {"available": False, "reason": (result.stderr or "genesis-eeprom is not installed").strip()}
+            GLib.idle_add(self.show_bootloader, info)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_bootloader(self, info):
+        if not info.get("available"):
+            self.bl_version.set_text("Not available")
+            self.bl_order.set_text("—")
+            self.bl_first.set_sensitive(False)
+            self.bl_apply.set_sensitive(False)
+            self.bl_state.set_text("Bootloader settings need a Raspberry Pi 5 (%s)." % info.get("reason", "unknown"))
+            return False
+        self.bl_version.set_text("%s · %s" % (info.get("version", "?"), info.get("booted_from", "?")))
+        self.bl_order.set_text(info.get("boot_order_text") or info.get("boot_order", "?"))
+        first = (info.get("settings") or {}).get("boot_first", "auto")
+        if first in dict(BOOT_FIRST):
+            self.bl_first.set_active_id(first)
+        state = info.get("state") or {}
+        text = state.get("reason", "")
+        if state.get("status") == "staged":
+            text = "An update is staged: reboot to apply it."
+        self.bl_state.set_text(("Genesis OS: " + text) if text else "")
+        return False
+
+    def on_bootloader_apply(self, _button):
+        choice = self.bl_first.get_active_id() or "auto"
+        self.bl_apply.set_sensitive(False)
+        run_root_async(["bootloader-first", choice], self.after_bootloader)
+
+    def after_bootloader(self, result):
+        self.bl_apply.set_sensitive(True)
+        lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0:
+            self.error("The bootloader was not changed", (result.stderr or result.stdout).strip())
+        elif any("staged" in line for line in lines):
+            self.show_banner("Bootloader update staged: it is written at the next reboot.")
+        else:
+            self.show_banner(lines[-1].replace("genesis-eeprom: ", "Bootloader: ") if lines else "Bootloader unchanged.")
+        self.refresh_bootloader()
+        return False
 
     def on_hostname_apply(self, _button):
         name = self.hostname_entry.get_text().strip()

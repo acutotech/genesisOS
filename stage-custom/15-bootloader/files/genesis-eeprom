@@ -1,0 +1,682 @@
+#!/usr/bin/python3 -I
+"""genesis-eeprom: apply Genesis OS's Raspberry Pi 5 bootloader settings, once.
+
+    genesis-eeprom apply [--again]     what genesis-eeprom.service runs at boot
+    genesis-eeprom status [--json]     bootloader version, boot order, what was done
+    genesis-eeprom first auto|sd|nvme|usb
+                                       choose the boot medium tried first, and apply
+    genesis-eeprom plan (--running FILE | --image PIEEPROM.BIN) --boot-mode N
+                                       print the config that would be written (no hardware needed)
+
+The settings come from /etc/genesis/bootloader.conf (rendered from custom.conf at
+build time). "boot_first=auto" puts the medium this system booted from first in
+BOOT_ORDER and keeps the other local media (SD card, NVMe, USB) as fallbacks, so
+an SD card, an NVMe drive or a USB drive written with Genesis OS all boot, and a
+box keeps preferring the medium it was set up on.
+
+How it changes the EEPROM, and why:
+
+* It edits the config the bootloader is RUNNING (read with rpi-eeprom-config),
+  changing only the keys it owns and only outside conditional sections; a key a
+  user set inside a [section] is theirs and is left alone.
+* It writes no new bootloader version: the update is built from the packaged
+  image with the same BUILD_TIMESTAMP as the running bootloader, with only the
+  config replaced, and verified by reading it back.
+* It stages the update (RPI_EEPROM_IMMEDIATE_UPDATE=0: on a Pi 5 the default is
+  to write the EEPROM at once); the bootloader applies it at the next reboot.
+* It runs once. The next boot checks the result and records it; after that the
+  service never runs again, so a later change with raspi-config or
+  rpi-eeprom-config is never undone. `apply --again` starts over on request.
+
+Only a Raspberry Pi 5 (not a CM5 or Pi 500, whose factory settings differ) is
+touched, never in a chroot (the image build and CI see the build host's /proc),
+never with secure boot or FREEZE_VERSION=1. Undo before rebooting:
+`sudo rpi-eeprom-update -r`; the original config is kept in
+/var/lib/genesis/eeprom/original.conf.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+# Tests run the whole program against a fake root with stand-ins for the
+# Raspberry Pi tools; both overrides are needed, so a fake root can never reach
+# the real rpi-eeprom-update.
+ROOT = os.environ.get("GENESIS_EEPROM_ROOT", "")
+TOOLS = os.environ.get("GENESIS_EEPROM_TOOLS", "")
+
+CONF = "/etc/genesis/bootloader.conf"
+STATE_DIR = "/var/lib/genesis/eeprom"
+DT = "/proc/device-tree"
+FIRMWARE = "/usr/lib/firmware/raspberrypi/bootloader-2712"
+PENDING = "/run/rpi-eeprom-update-pending"
+EEPROM_DEFAULTS = "/etc/default/rpi-eeprom-update"
+
+IMAGE_SIZE = 2 * 1024 * 1024
+MAX_CONFIG = 4076          # bootconf.txt is one 4 KiB sector minus its header
+PI5_TYPE = 0x17            # revision code type of the Raspberry Pi 5 (CM5 0x18, Pi 500 0x19)
+MAX_DEFERRALS = 3
+
+MEDIA = {"sd": 1, "nvme": 6, "usb": 4}            # BOOT_ORDER codes
+FALLBACKS = (1, 6, 4)                             # SD, NVMe, USB: the factory order
+MODE_NAMES = {1: "SD card", 2: "network", 3: "USB device boot", 4: "USB drive", 6: "NVMe", 7: "HTTP",
+              0xE: "stop", 0xF: "restart"}
+KNOWN_MODES = {1, 2, 3, 4, 6, 7, 0xE, 0xF}
+
+# bootloader.conf key -> bootloader key; only these are ever written
+FLAGS = {
+    "net_install_at_power_on": "NET_INSTALL_AT_POWER_ON",
+    "pcie_probe": "PCIE_PROBE",
+    "power_off_on_halt": "POWER_OFF_ON_HALT",
+}
+
+SECTION = re.compile(r"^\s*\[([^\]]*)\]\s*$")
+SETTING = re.compile(r"^\s*([A-Za-z0-9_]+)\s*=(.*)$")
+
+
+class Skip(Exception):
+    """A reason not to touch the bootloader."""
+
+
+# -- settings -----------------------------------------------------------------------------
+def read_settings(text: str) -> dict:
+    """bootloader.conf: `boot_first`, the flags (0, 1 or keep), and `enabled`."""
+    settings = {"enabled": "1", "boot_first": "auto", **{key: "keep" for key in FLAGS}}
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, sep, value = line.partition("=")
+        key, value = key.strip().lower(), value.strip().lower()
+        if not sep or key not in settings:
+            raise ValueError(f"line {number}: unknown setting {raw.strip()!r}")
+        allowed = {"0", "1"} if key == "enabled" else ({"auto", "keep", *MEDIA} if key == "boot_first" else {"0", "1", "keep"})
+        if value not in allowed:
+            raise ValueError(f"line {number}: {key} must be one of {', '.join(sorted(allowed))}, not {value!r}")
+        settings[key] = value
+    return settings
+
+
+# -- BOOT_ORDER ---------------------------------------------------------------------------
+def parse_order(value: str) -> list[int] | None:
+    """Boot modes in the order tried (BOOT_ORDER is read from its last hex digit)."""
+    value = value.strip().lower()
+    if not re.fullmatch(r"0x[0-9a-f]{1,8}", value):
+        return None
+    return [int(digit, 16) for digit in reversed(value[2:])]
+
+
+def format_order(modes: list[int]) -> str:
+    return "0x" + "".join(f"{mode:x}" for mode in reversed(modes))
+
+
+def order_problem(modes: list[int]) -> str | None:
+    if len(modes) > 8:
+        return "more than 8 boot modes"
+    unknown = [m for m in modes if m not in KNOWN_MODES]
+    if unknown:
+        return f"boot mode {unknown[0]:x} is not one a Raspberry Pi 5 knows"
+    if 3 in modes[:-1]:
+        return "USB device boot (3) is not the last mode"
+    if modes and modes[-1] == 0xE:
+        return "it ends in stop (e)"
+    return None
+
+
+def describe_order(value: str | None) -> str:
+    modes = parse_order(value or "0xf41")
+    if modes is None:
+        return value or ""
+    names = [MODE_NAMES.get(m, f"mode {m:x}") for m in modes if m != 0xF]
+    return " → ".join(names) + (" → repeat" if modes and modes[-1] == 0xF else "")
+
+
+def boot_order_first(current: str | None, first: int) -> str:
+    """The current BOOT_ORDER with `first` tried first and SD, NVMe and USB all in it.
+
+    The other modes keep their relative order (a network boot a user added stays),
+    a missing local medium is added at its factory position, and the order ends in
+    restart. Raises Skip for an order this should not rewrite.
+    """
+    modes = parse_order(current) if current else [1, 4, 0xF]   # an empty BOOT_ORDER means 0xf41
+    if modes is None:
+        raise Skip(f"BOOT_ORDER={current} is not a hex number")
+    problem = order_problem(modes)
+    if problem:
+        raise Skip(f"BOOT_ORDER={current} is left alone: {problem}")
+    tail = [modes.pop()] if modes and modes[-1] in (0xF, 3) else [0xF]
+    for medium in FALLBACKS:
+        if medium in modes:
+            continue
+        later = [m for m in FALLBACKS[FALLBACKS.index(medium) + 1:] if m in modes]
+        modes.insert(modes.index(later[0]) if later else len(modes), medium)
+    modes.remove(first)
+    modes.insert(0, first)
+    result = modes + tail
+    if len(result) > 8:
+        raise Skip(f"BOOT_ORDER={current} has no room for every local medium")
+    return format_order(result)
+
+
+# -- config text ----------------------------------------------------------------------------
+def normalise(text: str) -> str:
+    text = text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+    return text.rstrip("\n") + "\n" if text.strip() else ""
+
+
+def settings_in(text: str) -> tuple[dict, set]:
+    """Unconditional key values (the last one wins) and keys set inside conditional sections."""
+    values: dict[str, str] = {}
+    conditional: set[str] = set()
+    section = "all"
+    for line in normalise(text).splitlines():
+        header = SECTION.match(line)
+        if header:
+            section = header.group(1).strip().lower()
+            if section == "config.txt":
+                break   # the rest of the file is config.txt for the OS, not bootloader settings
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        setting = SETTING.match(line)
+        if setting:
+            key = setting.group(1).upper()
+            if section == "all":
+                values[key] = setting.group(2).strip()
+            else:
+                conditional.add(key)
+    return values, conditional
+
+
+def merge(text: str, wanted: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """The config with `wanted` set outside conditional sections; returns (text, skipped keys: reason).
+
+    Every unconditional occurrence of a key gets the new value (so the result does
+    not depend on which duplicate the bootloader honours); a key that does not exist
+    yet goes into an [all] block before a [config.txt] section. Lines that already
+    have the wanted value are not rewritten.
+    """
+    lines = normalise(text).splitlines()
+    _values, conditional = settings_in(text)
+    skipped = {key: "set in a conditional section" for key in wanted if key in conditional}
+    todo = {key: value for key, value in wanted.items() if key not in skipped}
+    found: set[str] = set()
+    section = "all"
+    insert_at = len(lines)
+    for index, line in enumerate(lines):
+        header = SECTION.match(line)
+        if header:
+            section = header.group(1).strip().lower()
+            if section == "config.txt":
+                insert_at = index
+                break   # the rest is config.txt for the OS
+            continue
+        if section != "all" or line.lstrip().startswith("#"):
+            continue
+        setting = SETTING.match(line)
+        if setting and setting.group(1).upper() in todo:
+            key = setting.group(1).upper()
+            found.add(key)
+            if setting.group(2).strip() != todo[key]:
+                lines[index] = f"{key}={todo[key]}"
+    added = [f"{key}={value}" for key, value in todo.items() if key not in found]
+    if added:
+        before = "all"
+        for line in lines[:insert_at]:
+            header = SECTION.match(line)
+            if header:
+                before = header.group(1).strip().lower()
+        block = (["[all]"] if before != "all" else []) + added
+        lines[insert_at:insert_at] = block
+    return "\n".join(lines) + "\n", skipped
+
+
+def validate(text: str) -> None:
+    data = text.encode("ascii", "strict")
+    if len(data) > MAX_CONFIG:
+        raise Skip(f"the config would be {len(data)} bytes; the bootloader holds {MAX_CONFIG}")
+    if len(text.splitlines()) < 2:
+        raise Skip("the config would have fewer than two lines")
+    values, _conditional = settings_in(text)
+    if "BOOT_ORDER" in values:
+        modes = parse_order(values["BOOT_ORDER"])
+        if modes is None or order_problem(modes):
+            raise Skip(f"BOOT_ORDER={values['BOOT_ORDER']} would not boot reliably")
+
+
+def plan(running: str, settings: dict, boot_mode: int | None) -> tuple[str, list[str]]:
+    """The config to write, and notes on what was left alone."""
+    notes: list[str] = []
+    values, conditional = settings_in(running)
+    wanted: dict[str, str] = {}
+    first = settings["boot_first"]
+    if first != "keep":
+        medium = boot_mode if first == "auto" else MEDIA[first]
+        if medium not in FALLBACKS:
+            notes.append(f"boot order kept: booted from {MODE_NAMES.get(medium, f'mode {medium}') if medium else 'an unknown medium'}")
+        elif "BOOT_ORDER" in conditional:
+            notes.append("boot order kept: BOOT_ORDER is set in a conditional section")
+        else:
+            try:
+                wanted["BOOT_ORDER"] = boot_order_first(values.get("BOOT_ORDER"), medium)
+            except Skip as why:
+                notes.append(str(why))
+    for name, key in FLAGS.items():
+        if settings[name] != "keep":
+            wanted[key] = settings[name]
+    merged, skipped = merge(running, wanted)
+    notes += [f"{key} kept: {reason}" for key, reason in skipped.items()]
+    validate(merged)
+    return merged, notes
+
+
+# -- the Pi ---------------------------------------------------------------------------------
+def path(p: str) -> str:
+    return ROOT + p
+
+
+def tool(name: str) -> str:
+    if ROOT and not TOOLS:
+        sys.exit("genesis-eeprom: GENESIS_EEPROM_ROOT needs GENESIS_EEPROM_TOOLS (test stand-ins)")
+    return os.path.join(TOOLS, name) if TOOLS else f"/usr/bin/{name}"
+
+
+def run(*argv: str, env: dict | None = None, check: bool = True) -> str:
+    result = subprocess.run(argv, capture_output=True, text=True, env={**os.environ, **(env or {})}, timeout=600)
+    if check and result.returncode != 0:
+        raise RuntimeError(f"{os.path.basename(argv[0])} {' '.join(argv[1:])} exited {result.returncode}: "
+                           f"{(result.stderr or result.stdout).strip()[:300]}")
+    return result.stdout
+
+
+def dt_int(name: str) -> int | None:
+    for candidate in (name, name.replace("-", "_")):
+        try:
+            with open(path(f"{DT}/{candidate}"), "rb") as fh:
+                data = fh.read()
+            if len(data) >= 4:
+                return int.from_bytes(data[:4], "big")
+        except OSError:
+            continue
+    return None
+
+
+def revision() -> int | None:
+    rev = dt_int("system/linux,revision")
+    if rev is not None:
+        return rev
+    try:
+        with open(path("/proc/cpuinfo"), encoding="ascii", errors="replace") as fh:
+            match = re.search(r"^Revision\s*:\s*([0-9a-fA-F]+)", fh.read(), re.M)
+        return int(match.group(1), 16) if match else None
+    except OSError:
+        return None
+
+
+def in_chroot() -> bool:
+    if ROOT:
+        return os.path.exists(path("/fake-chroot"))
+    try:
+        root, init_root = os.stat("/"), os.stat("/proc/1/root/.")
+    except OSError:
+        return True   # no /proc of our own: not a booted system
+    return (root.st_dev, root.st_ino) != (init_root.st_dev, init_root.st_ino)
+
+
+def gate() -> int:
+    """The boot mode, or Skip when this is not a Pi 5 the bootloader may be changed on."""
+    if in_chroot():
+        raise Skip("chroot")
+    rev = revision()
+    if rev is None or not rev & (1 << 23) or (rev >> 4) & 0xFF != PI5_TYPE:
+        raise Skip("not a Raspberry Pi 5")
+    if dt_int("chosen/bootloader/signed"):
+        raise Skip("secure boot is enabled")
+    for name in ("rpi-eeprom-config", "rpi-eeprom-update"):
+        if not os.access(tool(name), os.X_OK):
+            raise Skip(f"{name} is not installed (package rpi-eeprom)")
+    mode = dt_int("chosen/bootloader/boot-mode")
+    if mode is None:
+        raise Skip("the firmware does not report the boot mode")
+    return mode
+
+
+def running_config() -> str:
+    return normalise(run(tool("rpi-eeprom-config")))
+
+
+def image_stamps(image: str) -> tuple[int | None, int | None]:
+    with open(image, "rb") as fh:
+        data = fh.read()
+    ts = re.search(rb"BUILD_TIMESTAMP=(\d+)", data)
+    mfg = re.search(rb"MFG_VER: (\d+)", data)
+    return (int(ts.group(1)) if ts else None, int(mfg.group(1)) if mfg else None)
+
+
+def pick_image() -> str:
+    """The packaged image of the running bootloader version: only the config will differ."""
+    running = dt_int("chosen/bootloader/build-timestamp")
+    if running is None:
+        raise Skip("the firmware does not report the bootloader version")
+    for channel in ("default", "latest"):
+        folder = path(f"{FIRMWARE}/{channel}")
+        try:
+            names = sorted(os.listdir(folder), reverse=True)
+        except OSError:
+            continue
+        for name in names:
+            image = os.path.join(folder, name)
+            if re.fullmatch(r"pieeprom-\d{4}-\d{2}-\d{2}\.bin", name) and os.path.getsize(image) == IMAGE_SIZE:
+                if image_stamps(image)[0] == running:
+                    return image
+    raise Deferred(f"no packaged image matches the running bootloader ({stamp_date(running)}); "
+                   "it is newer or older than package rpi-eeprom")
+
+
+class Deferred(Exception):
+    """Try again at a later boot."""
+
+
+def stamp_date(ts: int | None) -> str:
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%d") if ts else "unknown"
+
+
+def boot_fs() -> str:
+    return run(tool("rpi-eeprom-update"), "-b").strip() or path("/boot/firmware")
+
+
+def stage(config: str, workdir: str) -> dict:
+    """Build the update from the running version's image, stage it, and check what was staged."""
+    image = pick_image()
+    conf = os.path.join(workdir, "bootconf.txt")
+    with open(conf, "w", encoding="ascii") as fh:
+        fh.write(config)
+    built = os.path.join(workdir, "pieeprom.bin")
+    run(tool("rpi-eeprom-config"), "--config", conf, "--out", built, image)
+    if os.path.getsize(built) != IMAGE_SIZE or image_stamps(built) != image_stamps(image):
+        raise RuntimeError("the built image differs from the packaged one in more than its config")
+    if normalise(run(tool("rpi-eeprom-config"), built)) != config:
+        raise RuntimeError("the built image does not read back with the planned config")
+    # staged, not written at once: the bootloader applies it at the next reboot
+    run(tool("rpi-eeprom-update"), "-d", "-f", built, env={"RPI_EEPROM_IMMEDIATE_UPDATE": "0"})
+    pending = ""
+    try:
+        with open(path(PENDING), encoding="ascii", errors="replace") as fh:
+            pending = fh.read().split(" ", 1)[0].strip()
+    except OSError:
+        pass
+    if pending == "recovery":
+        bootfs = boot_fs()
+        upd, sig = os.path.join(bootfs, "pieeprom.upd"), os.path.join(bootfs, "pieeprom.sig")
+        with open(upd, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        with open(sig, encoding="ascii", errors="replace") as fh:
+            signed = (fh.readline().split() or [""])[0]
+        if digest != signed:
+            raise RuntimeError("the staged pieeprom.upd does not match pieeprom.sig")
+        if normalise(run(tool("rpi-eeprom-config"), upd)) != config:
+            raise RuntimeError("the staged pieeprom.upd does not hold the planned config")
+        os.sync()
+    return {"image": os.path.basename(image), "version": stamp_date(image_stamps(image)[0]),
+            "path": pending or "unknown"}
+
+
+# -- state ----------------------------------------------------------------------------------
+def state_file(name: str) -> str:
+    return path(f"{STATE_DIR}/{name}")
+
+
+def load_state() -> dict:
+    try:
+        with open(state_file("state.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state: dict, done: bool = False) -> None:
+    os.makedirs(state_file(""), exist_ok=True)
+    state["time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    tmp = state_file("state.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
+    os.replace(tmp, state_file("state.json"))
+    marker = state_file("done")
+    if done:
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(state.get("status", "") + "\n")
+    elif os.path.exists(marker):
+        os.remove(marker)
+
+
+def write_text(name: str, text: str) -> None:
+    os.makedirs(state_file(""), exist_ok=True)
+    with open(state_file(name), "w", encoding="ascii") as fh:
+        fh.write(text)
+
+
+def read_text(name: str) -> str | None:
+    try:
+        with open(state_file(name), encoding="ascii", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def boot_id() -> str:
+    try:
+        with open(path("/proc/sys/kernel/random/boot_id"), encoding="ascii") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def log(message: str) -> None:
+    print(f"genesis-eeprom: {message}", flush=True)
+
+
+# -- commands --------------------------------------------------------------------------------
+def load_settings() -> dict:
+    try:
+        with open(path(CONF), encoding="utf-8") as fh:
+            return read_settings(fh.read())
+    except FileNotFoundError:
+        return read_settings("enabled=0\n")
+
+
+def check_staged(state: dict) -> None:
+    """The boot after staging: did the bootloader take the new config?"""
+    running = running_config()
+    if running == read_text("desired.conf"):
+        state.update(status="applied", reason="the bootloader runs the Genesis settings")
+    elif running == read_text("original.conf"):
+        state.update(status="failed", reason="the update was not applied (cancelled, or the bootloader refused it)")
+    else:
+        state.update(status="user-changed", reason="the bootloader config was changed by something else since")
+    log(state["reason"])
+    save_state(state, done=True)
+
+
+def apply(again: bool = False) -> int:
+    settings = load_settings()
+    state = load_state()
+    if again:
+        if state.get("status") == "staged" and state.get("boot_id") == boot_id() and not in_chroot():
+            # our own update from earlier in this boot (a second choice in Settings): replace it
+            run(tool("rpi-eeprom-update"), "-r", check=False)
+        state = {}
+    elif os.path.exists(state_file("done")):
+        log(f"nothing to do: {state.get('status', 'done')} ({state.get('reason', '')})")
+        return 0
+    if settings["enabled"] != "1":
+        log("bootloader customisation is off (enabled=0 in /etc/genesis/bootloader.conf)")
+        return 0
+    try:
+        mode = gate()
+    except Skip as why:
+        log(f"skip: {why}")
+        if str(why) not in ("chroot", "not a Raspberry Pi 5"):
+            save_state({"status": "skipped", "reason": str(why)}, done=True)
+        return 0
+    if state.get("status") == "staged":
+        if state.get("boot_id") == boot_id():
+            log("an update is staged; it is applied at the next reboot")
+            return 0
+        check_staged(state)
+        return 0
+    try:
+        if os.path.exists(path(PENDING)) or os.path.exists(os.path.join(boot_fs(), "pieeprom.upd")):
+            raise Deferred("another bootloader update is pending")
+        running = running_config()
+        if not running:
+            raise Deferred("the running bootloader config could not be read")
+        values, _conditional = settings_in(running)
+        if values.get("FREEZE_VERSION") == "1":
+            raise Skip("FREEZE_VERSION=1: the bootloader is frozen")
+        if values.get("ENABLE_SELF_UPDATE") == "0" and mode != MEDIA["sd"]:
+            raise Skip("ENABLE_SELF_UPDATE=0: an update can only be applied from an SD card")
+        desired, notes = plan(running, settings, mode)
+        for note in notes:
+            log(note)
+        base = {"boot_mode": mode, "booted_from": MODE_NAMES.get(mode, f"mode {mode}"), "notes": notes}
+        if desired == running:
+            save_state({**base, "status": "unchanged", "reason": "the bootloader already has the Genesis settings"}, done=True)
+            log("the bootloader already has the Genesis settings")
+            return 0
+        write_text("original.conf", running)
+        write_text("desired.conf", desired)
+        with tempfile.TemporaryDirectory(prefix="genesis-eeprom.") as workdir:
+            staged = stage(desired, workdir)
+        reason = ("staged; the bootloader applies it at the next reboot" if staged["path"] == "recovery"
+                  else f"written to the EEPROM ({staged['path']}); active from the next reboot")
+        save_state({**base, **staged, "status": "staged", "reason": reason, "boot_id": boot_id()})
+        log(f"{reason}: BOOT_ORDER {describe_order(settings_in(desired)[0].get('BOOT_ORDER'))}")
+    except Skip as why:
+        save_state({"status": "skipped", "reason": str(why)}, done=True)
+        log(f"skip: {why}")
+    except Deferred as why:
+        deferrals = int(state.get("deferrals", 0)) + 1
+        final = deferrals >= MAX_DEFERRALS
+        save_state({"status": "failed" if final else "deferred", "reason": str(why), "deferrals": deferrals}, done=final)
+        log(f"{'gave up' if final else 'deferred to the next boot'}: {why}")
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as why:
+        save_state({"status": "failed", "reason": str(why)}, done=True)
+        log(f"failed: {why}")
+        return 1
+    return 0
+
+
+def status() -> dict:
+    out: dict = {"available": False}
+    try:
+        out["settings"] = load_settings()
+    except ValueError as why:
+        out["settings_error"] = str(why)
+    out["state"] = load_state()
+    try:
+        out["boot_mode"] = gate()
+        out["available"] = True
+    except Skip as why:
+        out["reason"] = str(why)
+        return out
+    out["booted_from"] = MODE_NAMES.get(out["boot_mode"], f"mode {out['boot_mode']}")
+    out["version"] = stamp_date(dt_int("chosen/bootloader/build-timestamp"))
+    try:
+        running = running_config()
+        order = settings_in(running)[0].get("BOOT_ORDER")
+        out.update(config=running, boot_order=order or "0xf41", boot_order_text=describe_order(order))
+    except (RuntimeError, OSError) as why:
+        out["config_error"] = str(why)
+    out["pending"] = os.path.exists(path(PENDING))
+    return out
+
+
+def set_first(choice: str) -> int:
+    """Settings: change boot_first in bootloader.conf and apply it now."""
+    if choice not in ("auto", *MEDIA):
+        sys.exit(f"genesis-eeprom: first must be auto, sd, nvme or usb, not {choice!r}")
+    conf = path(CONF)
+    try:
+        with open(conf, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    lines = [line for line in lines if line.split("=", 1)[0].strip().lower() not in ("boot_first", "enabled")]
+    lines += [f"boot_first={choice}", "enabled=1"]
+    read_settings("\n".join(lines))
+    os.makedirs(os.path.dirname(conf), exist_ok=True)
+    with open(conf + ".tmp", "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.replace(conf + ".tmp", conf)
+    return apply(again=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="genesis-eeprom", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    p_apply = sub.add_parser("apply", help="apply the settings (genesis-eeprom.service)")
+    p_apply.add_argument("--again", action="store_true", help="start over even if it ran before")
+    p_status = sub.add_parser("status", help="show the bootloader and what was done")
+    p_status.add_argument("--json", action="store_true")
+    p_first = sub.add_parser("first", help="choose the boot medium tried first and apply it")
+    p_first.add_argument("medium", choices=["auto", *MEDIA])
+    p_plan = sub.add_parser("plan", help="print the config that would be written")
+    source = p_plan.add_mutually_exclusive_group(required=True)
+    source.add_argument("--running", metavar="FILE", help="a bootloader config to start from")
+    source.add_argument("--image", metavar="PIEEPROM.BIN", help="start from the config inside this image")
+    p_plan.add_argument("--boot-mode", type=int, required=True, help="1 SD, 4 USB, 6 NVMe")
+    p_plan.add_argument("--settings", metavar="FILE", default=None, help=f"instead of {CONF}")
+    args = parser.parse_args(argv)
+
+    if args.command == "apply":
+        return apply(args.again)
+    if args.command == "first":
+        return set_first(args.medium)
+    if args.command == "status":
+        info = status()
+        if args.json:
+            print(json.dumps(info, indent=1, sort_keys=True))
+        else:
+            if not info["available"]:
+                print(f"Bootloader customisation not available: {info.get('reason', '')}")
+            else:
+                print(f"Bootloader {info['version']}, booted from {info['booted_from']}")
+                print(f"Boot order {info.get('boot_order', '?')}: {info.get('boot_order_text', '')}")
+            state = info.get("state") or {}
+            if state:
+                print(f"Genesis: {state.get('status')}: {state.get('reason', '')}")
+        return 0
+    # plan
+    if args.settings:
+        with open(args.settings, encoding="utf-8") as fh:
+            settings = read_settings(fh.read())
+    else:
+        settings = load_settings()
+    if args.running:
+        with open(args.running, encoding="ascii", errors="strict") as fh:
+            running = normalise(fh.read())
+    else:
+        running = normalise(run(tool("rpi-eeprom-config"), args.image))
+    try:
+        desired, notes = plan(running, settings, args.boot_mode)
+    except Skip as why:
+        print(f"genesis-eeprom: {why}", file=sys.stderr)
+        return 2
+    for note in notes:
+        print(f"genesis-eeprom: {note}", file=sys.stderr)
+    sys.stdout.write(desired)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
