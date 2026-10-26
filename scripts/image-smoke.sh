@@ -173,7 +173,7 @@ fi
 # genesis-eeprom plans into the packaged bootloader image and reads it back, and the
 # service itself must refuse to run in this chroot.
 bootloader() {
-	local failures=0 fwdir=/usr/lib/firmware/raspberrypi/bootloader-2712 image mode out
+	local failures=0 fwdir=/usr/lib/firmware/raspberrypi/bootloader-2712 image mode out own
 	bcheck() { # description, then a command that must succeed
 		local what="$1"
 		shift
@@ -195,8 +195,10 @@ bootloader() {
 	# fixed settings, so the checks below do not depend on this build's EEPROM_* knobs
 	printf 'enabled=1\nboot_first=auto\npcie_probe=1\nnet_install_at_power_on=0\npower_off_on_halt=keep\n' > "${ROOT}/tmp/smoke-bootloader.conf"
 	if [ -n "${image}" ]; then
-		bcheck "the image's own bootloader.conf is valid" chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom plan \
-			--image "${fwdir}/default/${image}" --boot-mode 1 > /dev/null
+		own=0
+		chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom plan --image "${fwdir}/default/${image}" --boot-mode 1 \
+			> "${ROOT}/tmp/plan-own.conf" 2>&1 || own=$?
+		bcheck "the image's own bootloader.conf is valid (plan exit ${own})" test "${own}" = 0
 		echo "--- factory config of ${image} ---"
 		chroot "${ROOT}" /usr/bin/rpi-eeprom-config "${fwdir}/default/${image}" | sed 's/^/  /'
 		for mode in 1 6 4; do
