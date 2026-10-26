@@ -47,6 +47,8 @@ LETTERS = tuple(SENSOR_ADDRS)
 FIRST_ADDR = min(min(a) for a in SENSOR_ADDRS.values())
 LAST_ADDR = max(max(a) for a in SENSOR_ADDRS.values())
 MISSES_TO_DISCONNECT = 2
+SCAN_TIMEOUT_S = 15      # a scan still running after this counts as a missed scan
+MAX_POLL_MS = 3_600_000
 
 _ROW = re.compile(r"^\s*([0-9a-fA-F]{2}):(.*)$")
 
@@ -189,12 +191,14 @@ class SensorService(Service):
         self._failures = 0
         self._busy = False
         self._source = 0
+        self._watchdog = 0
         self.available = self.enabled and bool(self.fake or (self.tool and os.path.exists(self.device)))
         if not self.enabled:
             log.info("sensor bar disabled in shell.conf")
             return
         if not self.fake and not self.tool:
-            log.warning("i2cdetect not found (install i2c-tools); sensor boxes cannot be detected")
+            self.error = "i2cdetect not found (install i2c-tools)"
+            log.warning("%s; sensor boxes cannot be detected", self.error)
             return
         GLib.idle_add(self._poll)
 
@@ -205,7 +209,7 @@ class SensorService(Service):
     def interval_ms(self) -> int:
         if self.fake:
             return 500
-        return max(500, self.config.getint("sensors", "poll_ms"))
+        return min(MAX_POLL_MS, max(500, self.config.getint("sensors", "poll_ms")))
 
     def on_events(self, callback: Callable[[list, list], None]) -> None:
         self.event_listeners.append(callback)
@@ -238,18 +242,30 @@ class SensorService(Service):
             return False
         if not os.path.exists(self.device):
             # I2C switched off (raspi-config / Genesis Settings): check again later
+            message = f"{self.device} does not exist (I2C is off)"
             if self.available or self.tracker.connected():
-                self._apply_failure(f"{self.device} does not exist (I2C is off)")
+                self._apply_failure(message)
+            self.error = message
             self.available = False
             self._source = GLib.timeout_add(10000, self._poll)
             return False
         self.available = True
         self._busy = True
+        self._watchdog = GLib.timeout_add_seconds(SCAN_TIMEOUT_S, self._scan_overdue)
         self._run_async([self.tool, "-y", str(self.bus), f"0x{FIRST_ADDR:02x}", f"0x{LAST_ADDR:02x}"], self._scanned)
         return False
 
+    def _scan_overdue(self) -> bool:
+        # a scan that does not finish is a missed scan, every SCAN_TIMEOUT_S, until it does;
+        # no new scan starts meanwhile, so they never pile up behind a stuck bus
+        self._apply_failure(f"i2cdetect did not finish within {SCAN_TIMEOUT_S} s")
+        return True
+
     def _scanned(self, status: int, out: str) -> None:
         self._busy = False
+        if self._watchdog:
+            GLib.source_remove(self._watchdog)
+            self._watchdog = 0
         if status == 0:
             if self._failures:
                 log.info("I2C bus %d readable again", self.bus)

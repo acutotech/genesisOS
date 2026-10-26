@@ -33,6 +33,15 @@ if [ -z "${GENESIS_PREVIEW_INNER:-}" ]; then
 		install -m 755 /usr/share/applications/lxterminal.desktop "$GENESIS_DESKTOP_DIR/Terminal.desktop"
 	fi
 	export HOME="${HOME:-/tmp}"
+	# a private copy of the user's settings: the preview switches the wallpaper, and over
+	# SSH the user's live desktop watches the real shell.conf
+	user_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+	export XDG_CONFIG_HOME="$OUT/config"
+	rm -rf "$OUT/config"
+	mkdir -p "$XDG_CONFIG_HOME"
+	for sub in genesis gtk-3.0; do
+		if [ -d "$user_config/$sub" ]; then cp -a "$user_config/$sub" "$XDG_CONFIG_HOME/"; fi
+	done
 	unset WAYLAND_DISPLAY DISPLAY
 	echo "preview: starting labwc headless, output in $OUT"
 	# a private session bus, the compositor, and this script as the session client
@@ -142,7 +151,7 @@ try:
     from PIL import Image
 except ImportError:
     sys.exit(0)
-files = sorted(glob.glob(os.path.join(out, "0*.png")))
+files = sorted(glob.glob(os.path.join(out, "[0-9][0-9]-*.png")))
 if not files:
     sys.exit(0)
 thumbs = []
@@ -258,8 +267,10 @@ try:
         failures.append("sensor bar shown although no box was connected")
     if not sensors["sensors"]["bar_visible"] or sorted(sensors["sensors"]["connected"]) != ["A", "C", "H"]:
         failures.append(f"sensor bar did not show boxes A, C, H: {sensors['sensors']}")
-    if sensors["notifications"] < 1:
-        failures.append("no notification for the connected boxes")
+    if "3 sensors connected" not in sensors.get("notification_log", []):
+        failures.append(f"no notification for the connected boxes: {sensors.get('notification_log')}")
+    if "3 sensors disconnected" not in final.get("notification_log", []):
+        failures.append(f"no notification for the boxes that left: {final.get('notification_log')}")
     if card["sensors"]["card"] != "C":
         failures.append(f"sensor card for C not shown: {card['sensors']}")
     if final["sensors"]["bar_visible"]:

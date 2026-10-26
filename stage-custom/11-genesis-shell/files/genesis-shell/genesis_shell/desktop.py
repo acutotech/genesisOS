@@ -2,19 +2,22 @@
 
 Icons sit in columns from the top-left of the primary monitor, clear of the
 panel. Every label is black or white, whichever has the higher contrast with
-the part of the wallpaper right behind it (WCAG relative luminance, measured
-on the scaled wallpaper), with a soft shadow in the opposite tone; the choice
-is made again whenever the wallpaper or the layout changes.
+the part of the wallpaper right behind its text (WCAG relative luminance,
+measured on the scaled wallpaper), with a soft shadow in the opposite tone; the
+choice is made again whenever the wallpaper, the screen size or the layout
+changes.
 
 Click selects, double-click opens, right-click offers Open, Show in Files and
 Move to Trash. A launcher (.desktop file) runs only when it is executable, the
-same rule other desktops use so a downloaded file cannot run on a double-click.
+same rule other desktops use so a downloaded file cannot run on a double-click;
+a link to an application the system installed counts as trusted.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import shlex
 from dataclasses import dataclass
 
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
@@ -26,7 +29,8 @@ log = logging.getLogger("genesis.desktop")
 CELL_W, CELL_H = 104, 108
 ICON = 48
 EDGE = 14            # left margin and the gap below a top panel
-LABEL_TOP = ICON + 10  # where the label starts inside a cell
+LABEL_TOP = 6 + ICON + 6   # where the label starts inside a cell: box padding, icon, spacing
+LABEL_W, LABEL_H = CELL_W - 16, 34   # the label's box before it is laid out: two lines
 # the luminance at which black and white text have equal contrast (1.05/(L+0.05) == (L+0.05)/0.05)
 EQUAL_CONTRAST = 0.179
 
@@ -71,6 +75,11 @@ def region_luminance(pixbuf: GdkPixbuf.Pixbuf | None, x: int, y: int, w: int, h:
     return total / count if count else fallback
 
 
+def esc(text: str) -> str:
+    """Notification bodies are markup: a file called "<b>x</b>" must show as typed."""
+    return GLib.markup_escape_text(text)
+
+
 # -- items ------------------------------------------------------------------------------
 @dataclass
 class DesktopItem:
@@ -93,21 +102,32 @@ def desktop_dir() -> str:
     return path
 
 
-def trash_icon() -> Gio.Icon:
-    try:
-        info = Gio.File.new_for_uri("trash:///").query_info("trash::item-count", Gio.FileQueryInfoFlags.NONE, None)
-        full = info.get_attribute_uint32("trash::item-count") > 0
-    except (GLib.Error, TypeError):
-        full = False
+def trash_icon(full: bool) -> Gio.Icon:
     return Gio.ThemedIcon.new("user-trash-full" if full else "user-trash")
 
 
-def list_items(folder: str, show_home: bool = True, show_trash: bool = True) -> list[DesktopItem]:
+def launcher_trusted(path: str) -> bool:
+    """Executable launchers run; so do links to an application the system installed."""
+    if os.access(path, os.X_OK):
+        return True
+    real = os.path.realpath(path)
+    try:
+        owner = os.stat(real).st_uid
+    except OSError:
+        return False
+    for base in GLib.get_system_data_dirs():
+        apps = os.path.join(os.path.realpath(base), "applications", "")
+        if real.startswith(apps) and owner == 0:
+            return True
+    return False
+
+
+def list_items(folder: str, show_home: bool = True, show_trash: bool = True, trash_full: bool = False) -> list[DesktopItem]:
     items: list[DesktopItem] = []
     if show_home:
         items.append(DesktopItem("::home", "Home", "home", Gio.ThemedIcon.new("user-home"), GLib.get_home_dir()))
     if show_trash:
-        items.append(DesktopItem("::trash", "Trash", "trash", trash_icon()))
+        items.append(DesktopItem("::trash", "Trash", "trash", trash_icon(trash_full)))
     entries: list[DesktopItem] = []
     try:
         enum = Gio.File.new_for_path(folder).enumerate_children(
@@ -173,7 +193,20 @@ class DesktopIcon(Gtk.EventBox):
         self.add(box)
         self.set_tooltip_text(item.name)
         self.tone = ""
+        self.cell = (0, 0)
+        self.measured: tuple[int, int, int, int] | None = None   # the label box the tone was measured on
+        self.label.connect("size-allocate", lambda *_a: desktop.queue_recolour())
         self.connect("button-press-event", self._pressed)
+
+    def label_box(self, fixed: Gtk.Widget) -> tuple[int, int, int, int]:
+        """Where the label's text is, in desktop coordinates (an estimate until it is laid out)."""
+        x, y = self.cell
+        width, height = self.label.get_allocated_width(), self.label.get_allocated_height()
+        if self.label.get_mapped() and width > 1 and height > 1:
+            res = self.label.translate_coordinates(fixed, 0, 0)
+            if res is not None:
+                return res[-2], res[-1], width, height
+        return x + (CELL_W - 6 - LABEL_W) // 2, y + LABEL_TOP, LABEL_W, LABEL_H
 
     def set_tone(self, tone: str) -> None:
         self.tone = tone
@@ -203,13 +236,20 @@ class DesktopIcons:
         self.icons: list[DesktopIcon] = []
         self.host = None
         self._rebuild_source = 0
+        self._recolour_source = 0
         self._file_monitor: Gio.FileMonitor | None = None
+        self._trash_monitor: Gio.FileMonitor | None = None
+        self.trash_full = False
+        self.selected_key: str | None = None
+        self.laid_out_for = (0, 0)
+        self.fixed.connect("size-allocate", self._on_resized)
         if self.enabled():
             try:
                 os.makedirs(self.folder, exist_ok=True)
             except OSError as exc:
                 log.warning("cannot create %s: %s", self.folder, exc)
         self._watch()
+        self._watch_trash()
         shell.wallpaper.listeners.append(self.recolour)
         self.config.connect(self._on_config)
         display = Gdk.Display.get_default()
@@ -239,9 +279,44 @@ class DesktopIcons:
     def _watch(self) -> None:
         try:
             self._file_monitor = Gio.File.new_for_path(self.folder).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
-            self._file_monitor.connect("changed", lambda *_a: self._queue_rebuild())
+            self._file_monitor.connect("changed", self._on_folder_changed)
         except GLib.Error as exc:
             log.warning("cannot watch %s: %s", self.folder, exc)
+
+    def _on_folder_changed(self, _monitor, file, _other, event) -> None:
+        # files coming, going or renamed change the icons; a file being written does not
+        # (a logger appending to ~/Desktop/readings.csv must not rebuild the desktop twice a second),
+        # except a launcher, whose name, icon and trust live in the file
+        E = Gio.FileMonitorEvent
+        if event in (E.CREATED, E.DELETED, E.MOVED_IN, E.MOVED_OUT, E.RENAMED, E.MOVED):
+            self._queue_rebuild()
+        elif event in (E.CHANGES_DONE_HINT, E.ATTRIBUTE_CHANGED) and (file.get_basename() or "").endswith(".desktop"):
+            self._queue_rebuild()
+
+    def _watch_trash(self) -> None:
+        """Follow the Trash (through gvfs) so its icon shows whether it is empty."""
+        try:
+            self._trash_monitor = Gio.File.new_for_uri("trash:///").monitor_directory(Gio.FileMonitorFlags.NONE, None)
+            self._trash_monitor.connect("changed", lambda *_a: self._count_trash())
+        except GLib.Error as exc:
+            log.debug("cannot watch the Trash: %s", exc)
+        self._count_trash()
+
+    def _count_trash(self) -> None:
+        try:
+            Gio.File.new_for_uri("trash:///").query_info_async(
+                "trash::item-count", Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, None, self._trash_counted)
+        except (GLib.Error, TypeError) as exc:
+            log.debug("cannot count the Trash: %s", exc)
+
+    def _trash_counted(self, file, result) -> None:
+        try:
+            full = file.query_info_finish(result).get_attribute_uint32("trash::item-count") > 0
+        except GLib.Error:
+            full = False
+        if full != self.trash_full:
+            self.trash_full = full
+            self._queue_rebuild()
 
     def _queue_rebuild(self) -> None:
         if self._rebuild_source:
@@ -265,36 +340,62 @@ class DesktopIcons:
             return thickness + EDGE, EDGE
         return EDGE, thickness + EDGE
 
+    def _on_resized(self, _widget, alloc) -> None:
+        # a new mode or scale on the same monitor: lay the icons out again for the new size
+        if self.icons and alloc.width > 1 and (alloc.width, alloc.height) != self.laid_out_for:
+            self._queue_rebuild()
+
     def rebuild(self) -> None:
         for icon in self.icons:
             icon.destroy()
         self.icons = []
         if self.host is None or not self.enabled():
             return
-        items = list_items(self.folder, self.config.getbool("desktop", "show_home"), self.config.getbool("desktop", "show_trash"))
-        geo = self.host.monitor.get_geometry()
+        items = list_items(self.folder, self.config.getbool("desktop", "show_home"), self.config.getbool("desktop", "show_trash"),
+                           self.trash_full)
+        width, height = self.fixed.get_allocated_width(), self.fixed.get_allocated_height()
+        if width <= 1 or height <= 1:
+            geo = self.host.monitor.get_geometry()
+            width, height = geo.width, geo.height
+        self.laid_out_for = (width, height)
         top, bottom = self.margins()
-        for item, (x, y) in zip(items, grid_positions(len(items), geo.width, geo.height, top, bottom)):
+        for item, (x, y) in zip(items, grid_positions(len(items), width, height, top, bottom)):
             icon = DesktopIcon(self, item)
             icon.cell = (x, y)
             self.fixed.put(icon, x, y)
             self.icons.append(icon)
+            if item.key == self.selected_key:
+                set_class(icon, "selected", True)
+        if not any(icon.item.key == self.selected_key for icon in self.icons):
+            self.selected_key = None
         self.fixed.show_all()
         self.recolour()
 
+    def queue_recolour(self) -> None:
+        # labels get their final size after layout: measure again then, once per batch
+        if not self._recolour_source:
+            self._recolour_source = GLib.idle_add(self._recolour_changed)
+
+    def _recolour_changed(self) -> bool:
+        self._recolour_source = 0
+        if any(icon.measured != icon.label_box(self.fixed) for icon in self.icons):
+            self.recolour()
+        return False
+
     def recolour(self) -> None:
-        """Pick black or white for every label from the wallpaper behind it."""
+        """Pick black or white for every label from the wallpaper behind its text."""
         if self.host is None or not self.icons:
             return
-        geo = self.host.monitor.get_geometry()
+        geo = self.host.monitor.get_geometry()   # the wallpaper is drawn at the monitor's size
         pixbuf = self.shell.wallpaper.pixbuf_for(geo.width, geo.height)
         for icon in self.icons:
-            x, y = icon.cell
-            lum = region_luminance(pixbuf, x, y + LABEL_TOP, CELL_W, CELL_H - LABEL_TOP)
-            icon.set_tone(label_tone(lum))
+            box = icon.label_box(self.fixed)
+            icon.measured = box
+            icon.set_tone(label_tone(region_luminance(pixbuf, *box)))
 
     # -- interaction ---------------------------------------------------------------------------
     def select(self, chosen: DesktopIcon | None) -> None:
+        self.selected_key = chosen.item.key if chosen is not None else None
         for icon in self.icons:
             set_class(icon, "selected", icon is chosen)
 
@@ -311,18 +412,21 @@ class DesktopIcons:
         elif item.kind == "folder":
             spawn([files, item.path])
         elif item.kind == "launcher":
-            if os.access(item.path, os.X_OK):
+            if launcher_trusted(item.path):
                 if not launch_app(item.app_info):
-                    notify("Cannot start", item.name)
+                    notify("Cannot start", esc(item.name))
+            elif os.path.islink(item.path):
+                notify("Launcher not trusted", esc(f"{item.name} links to a launcher that is not marked executable. "
+                                                   "Copy the launcher itself to the Desktop and mark the copy executable."))
             else:
-                notify("Launcher not trusted", f"{item.name} is not marked executable. To allow it, run: chmod +x \"{item.path}\"")
+                notify("Launcher not trusted", esc(f"{item.name} is not marked executable. To allow it, run: chmod +x {shlex.quote(item.path)}"))
         else:
             display = Gdk.Display.get_default()
             ctx = display.get_app_launch_context() if display else None
             try:
                 Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(item.path).get_uri(), ctx)
             except GLib.Error as exc:
-                notify("Cannot open", f"{item.name}: {exc.message}")
+                notify("Cannot open", esc(f"{item.name}: {exc.message}"))
 
     def context_menu(self, item: DesktopItem, event) -> None:
         menu = Gtk.Menu()
@@ -345,7 +449,7 @@ class DesktopIcons:
         try:
             Gio.File.new_for_path(item.path).trash(None)
         except GLib.Error as exc:
-            self.shell.notifications.notify_local("Cannot move to Trash", f"{item.name}: {exc.message}")
+            self.shell.notifications.notify_local("Cannot move to Trash", esc(f"{item.name}: {exc.message}"))
         self._queue_rebuild()
 
     def describe(self) -> dict:

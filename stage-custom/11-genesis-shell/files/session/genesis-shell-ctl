@@ -63,7 +63,7 @@ case "$cmd" in
 	sensor)
 		[ -n "${1:-}" ] || { echo "usage: genesis-shell-ctl sensor LETTER" >&2; exit 64; }
 		out=$(call ShowSensor "$(quote "$1")")
-		case "$out" in *true*) ;; *) echo "no sensor box $1" >&2; exit 1 ;; esac
+		case "$out" in *true*) ;; *) echo "sensor box $1 is not in the sensor bar (not connected?)" >&2; exit 1 ;; esac
 		;;
 	sensor-close) call HideSensor > /dev/null ;;
 	reload) call ReloadTheme > /dev/null ;;

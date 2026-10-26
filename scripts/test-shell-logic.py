@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PACKAGE_DIR = os.path.join(HERE, "..", "stage-custom", "11-genesis-shell", "files", "genesis-shell")
@@ -229,9 +230,32 @@ class Service(unittest.TestCase):
         svc = self.service(enabled="false")
         self.assertFalse(svc.available)
 
-    def test_poll_interval_floor(self):
-        svc = self.service(fake=False, poll_ms="10")
-        self.assertEqual(svc.interval_ms(), 500)
+    def test_poll_interval_bounds(self):
+        self.assertEqual(self.service(fake=False, poll_ms="10").interval_ms(), 500)
+        self.assertEqual(self.service(fake=False, poll_ms="5000000000").interval_ms(), sensors.MAX_POLL_MS)
+        self.assertLess(sensors.MAX_POLL_MS, 2 ** 32)          # GLib.timeout_add takes a guint
+
+    def test_missing_tool_and_device_are_reported(self):
+        svc = self.service(fake=False)
+        if svc.tool is None:
+            self.assertIn("i2c-tools", svc.error)
+        svc.tool = "/usr/sbin/i2cdetect"
+        svc.bus = 99                                           # /dev/i2c-99: I2C is off
+        svc._poll()
+        self.assertFalse(svc.available)
+        self.assertEqual(svc.error, "/dev/i2c-99 does not exist (I2C is off)")
+
+    def test_stuck_scan_counts_as_missed(self):
+        svc = self.service(fake=False)
+        svc.tool = "/usr/sbin/i2cdetect"
+        svc._scanned(0, RANGED_SCAN)                           # baseline: A, C, H, J
+        svc._busy = True                                       # the next scan never returns
+        self.assertTrue(svc._scan_overdue())                   # keeps firing while stuck
+        self.assertEqual(self.events, [])
+        svc._scan_overdue()
+        self.assertEqual(self.events, [([], ["A", "C", "H", "J"])])
+        self.assertIn("did not finish", svc.error)
+        self.assertTrue(svc._busy)                             # no second scan stacked on the stuck one
 
     def test_unreadable_bus_takes_boxes_off(self):
         svc = self.service(fake=False)
@@ -353,6 +377,32 @@ class RegionLuminance(unittest.TestCase):
         desktop.region_luminance(pix, 500, 500, 10, 10)       # wholly outside: still a valid 1x1 region
         for x, y, w, h in pix.requests:
             self.assertTrue(x + w <= 200 and y + h <= 100)
+
+
+class LauncherTrust(unittest.TestCase):
+    def test_executable_or_system_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, "share")
+            os.makedirs(os.path.join(system, "applications"))
+            entry = os.path.join(system, "applications", "app.desktop")
+            open(entry, "w").close()
+            os.chmod(entry, 0o644)
+            desk = os.path.join(tmp, "Desktop")
+            os.makedirs(desk)
+            plain = os.path.join(desk, "plain.desktop")
+            open(plain, "w").close()
+            os.chmod(plain, 0o644)
+            link = os.path.join(desk, "link.desktop")
+            os.symlink(entry, link)
+            with mock.patch.object(desktop.GLib, "get_system_data_dirs", lambda: [system + "/"], create=True):
+                self.assertFalse(desktop.launcher_trusted(plain))
+                os.chmod(plain, 0o755)
+                self.assertTrue(desktop.launcher_trusted(plain))
+                # a link into a system applications folder is trusted when root owns the target
+                self.assertEqual(desktop.launcher_trusted(link), os.stat(entry).st_uid == 0)
+                os.chmod(entry, 0o755)
+                self.assertTrue(desktop.launcher_trusted(link))
+                self.assertFalse(desktop.launcher_trusted(os.path.join(desk, "missing.desktop")))
 
 
 class Grid(unittest.TestCase):

@@ -171,6 +171,12 @@ class Shell:
         self.theme.apply()
         self.rebuild_panels()
         self.redraw_glass()
+        # components that read their settings on change, not on redraw
+        if self.desktop is not None:
+            self.desktop.rebuild()
+        if self.sensor_bar is not None:
+            self.sensor_bar.rebind()
+            self.sensor_bar.refresh()
 
     # -- monitors ------------------------------------------------------------------------
     def current_monitor(self) -> Gdk.Monitor | None:
@@ -325,6 +331,7 @@ class Shell:
             "panels": [{"monitor": str(m.get_model()), "mapped": bool(p.window.get_mapped())} for m, p in self.panels.items()],
             "toplevels": [{"app_id": t.app_id, "title": t.title, "active": t.activated} for t in self.toplevels.windows()],
             "notifications": len(self.notifications.items),
+            "notification_log": [n.summary for n in self.notifications.items[:12]],   # newest first
             "services": {
                 "audio": self.audio.available, "network": self.network.available, "bluetooth": self.bluetooth.available,
                 "battery": self.battery.available, "brightness": self.brightness.available, "toplevels": self.toplevels.available,

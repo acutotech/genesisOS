@@ -5,6 +5,10 @@ edge of the primary monitor. It exists only while at least one box is on the
 bus: it fades in when the first box connects and fades out when the last one
 leaves. A tile opens a card with the box's I2C address and status (one card at
 a time; the same tile closes it again). Every change posts a notification.
+
+The column scrolls when its tiles would not fit between the panel and the far
+edge. Both windows follow the primary monitor: an output that goes away takes
+its layer surfaces with it, and they are mapped again on the new primary.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import os
 import time
 
 import cairo
-from gi.repository import GdkPixbuf, GLib, Gtk, GtkLayerShell
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, GtkLayerShell
 
 from .services.sensors import LETTERS, SensorState, describe_events
 from .util import add_class, flat_button, icon_image, label, make_layer_window, primary_monitor, set_class
@@ -29,6 +33,8 @@ CARD_ICON = 72
 CARD_WIDTH = 248
 CARD_GAP = 6         # between the bar's glass and the card's glass
 FADE_MS = 220
+BAR_CHROME = 90      # bar height besides the tiles: shadow room, padding, header, separator
+TILE_STEP = 54       # one tile and the spacing after it
 
 _pixbufs: dict[tuple[str, int], GdkPixbuf.Pixbuf | None] = {}
 
@@ -103,6 +109,9 @@ class SensorCard:
         holder.add(self.glass)
         self.window.add(holder)
         self.glass.connect("size-allocate", self._limit_input)
+        # the compositor closes the surface when its output goes away: keep the window
+        self.window.connect("delete-event", lambda *_a: self.hide() or True)
+        self.tile: Gtk.Widget | None = None
 
         head = Gtk.Box(spacing=8)
         self.caption = label("", css=("sensor-card-caption",), xalign=0)
@@ -188,28 +197,35 @@ class SensorCard:
 
     def show_for(self, letter: str, tile: Gtk.Widget | None) -> None:
         self.letter = letter
+        self.tile = tile
         self._fill()
+        self.window.get_child().show_all()
+        self.place()
+        self.window.show_all()
+        self.visible = True
+        self.bar.refresh_tiles()
+
+    def place(self) -> None:
+        """Line the card up with its tile, clear of the panel and the screen edges, left of the bar."""
         mon = self.bar.monitor
         geo = mon.get_geometry() if mon is not None else None
-        self.window.get_child().show_all()
-        # line the card up with its tile, kept clear of the panel and the screen edges
         _min, natural = self.window.get_preferred_height()
         top = (geo.height - natural) // 2 if geo is not None else 0
-        if tile is not None and geo is not None:
+        tile = self.tile
+        if tile is not None and geo is not None and tile.get_mapped():
+            # PyGObject returns (x, y), or None when the widgets do not share a toplevel
             res = tile.translate_coordinates(self.bar.window, 0, 0)
-            if isinstance(res, tuple) and len(res) == 3 and res[0]:
-                tile_y = self.bar.top() + res[2] + tile.get_allocated_height() // 2
+            if res is not None:
+                tile_y = self.bar.top() + res[-1] + tile.get_allocated_height() // 2
                 top = tile_y - natural // 2
         if geo is not None:
-            low = self.shell.panel_thickness() - SHADOW + 6 if self.shell.panel_position() == "top" else -SHADOW + 6
-            high = geo.height - natural - (self.shell.panel_thickness() if self.shell.panel_position() == "bottom" else 0) + SHADOW - 6
+            panel = self.shell.panel_thickness()
+            low = (panel if self.shell.panel_position() == "top" else 0) - SHADOW + 6
+            high = geo.height - natural - (panel if self.shell.panel_position() == "bottom" else 0) + SHADOW - 6
             top = max(low, min(top, high))
         self._top_margin = int(top)
         GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.TOP, self._top_margin)
         GtkLayerShell.set_margin(self.window, GtkLayerShell.Edge.RIGHT, self._right_margin())
-        self.window.show_all()
-        self.visible = True
-        self.bar.refresh_tiles()
 
     _top_margin = 0
 
@@ -218,6 +234,7 @@ class SensorCard:
             return
         self.visible = False
         self.letter = None
+        self.tile = None
         self.window.hide()
         self.bar.refresh_tiles()
 
@@ -256,15 +273,31 @@ class SensorBar:
         add_class(sep, "sensor-bar-separator")
         self.glass.pack_start(sep, False, False, 0)
         self.tiles_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.glass.pack_start(self.tiles_box, False, False, 0)
+        # scrolls only when the tiles do not fit (eleven boxes on a 7" display)
+        self.scroller = Gtk.ScrolledWindow()
+        self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scroller.set_shadow_type(Gtk.ShadowType.NONE)
+        self.scroller.set_propagate_natural_width(True)
+        self.scroller.set_propagate_natural_height(True)
+        add_class(self.scroller, "sensor-scroller")
+        self.scroller.add(self.tiles_box)
+        self.glass.pack_start(self.scroller, False, False, 0)
         holder.add(self.glass)
         self.revealer.add(holder)
         self.window.add(self.revealer)
+        self.window.connect("delete-event", self._on_closed)
+        self.room = TILE_STEP
         self.tiles: dict[str, SensorTile] = {}
         self.card = SensorCard(self)
+        self.window.connect("size-allocate", self._on_resized)
         self.service.connect(self.refresh)
         self.service.on_events(self._on_events)
         shell.config.connect(self._on_config)
+        display = Gdk.Display.get_default()
+        if display is not None:
+            display.connect("monitor-added", lambda *_a: GLib.idle_add(self.rebind))
+            display.connect("monitor-removed", lambda *_a: GLib.idle_add(self.rebind))
+        self._fit()
         self.refresh()
 
     # -- geometry -------------------------------------------------------------------------
@@ -286,9 +319,52 @@ class SensorBar:
         except (AttributeError, TypeError):
             pass
 
+    def _fit(self) -> None:
+        """Cap the column so the bar stays between the panel and the opposite edge."""
+        if self.monitor is not None:
+            reserve = self.shell.panel_thickness() + 8   # the bar is centred, so the panel's room is kept at both ends
+            self.room = max(TILE_STEP, self.monitor.get_geometry().height - 2 * reserve - BAR_CHROME)
+        self._size_column()
+
+    def _size_column(self) -> None:
+        # the layer surface takes the window's minimum size, so the column's minimum is what it shows:
+        # every tile, or as many as there is room for (the rest scroll)
+        _min, natural = self.tiles_box.get_preferred_height()
+        self.scroller.set_min_content_height(-1)
+        self.scroller.set_max_content_height(self.room)
+        self.scroller.set_min_content_height(max(1, min(natural, self.room)))
+
+    def _on_resized(self, _win, _alloc) -> None:
+        if self.card.visible:
+            self.card.place()
+
+    def _on_closed(self, *_a) -> bool:
+        # the compositor closed the surface (its output went away); keep the widgets
+        # and map a new surface once GTK has caught up with the monitor change
+        self.window.hide()
+        GLib.timeout_add(300, self.rebind)
+        return True
+
+    def rebind(self) -> bool:
+        """Follow the primary monitor after outputs come and go."""
+        self.monitor = primary_monitor()
+        if self.monitor is not None:
+            GtkLayerShell.set_monitor(self.window, self.monitor)
+            GtkLayerShell.set_monitor(self.card.window, self.monitor)
+        self.card.hide()
+        self._fit()
+        if self.visible:
+            self.window.hide()   # a new layer surface, on the current primary
+            if self.monitor is not None:
+                self.window.show_all()
+        return False
+
     # -- content ---------------------------------------------------------------------------
     def _on_config(self) -> None:
-        if "sensors" in getattr(self.shell.config, "changed", {"sensors"}):
+        changed = getattr(self.shell.config, "changed", {"sensors", "panel"})
+        if "panel" in changed:
+            self._fit()
+        if "sensors" in changed:
             self.refresh()
 
     def letters_shown(self) -> list[str]:
@@ -312,6 +388,9 @@ class SensorBar:
         count = len(self.service.connected())
         self.header.set_tooltip_text(f"{count} sensor box{'es' if count != 1 else ''} on I²C bus {self.service.bus}")
         self.tiles_box.show_all()
+        self._size_column()
+        if self.card.visible and self.card.letter not in letters:
+            self.card.hide()   # its tile is gone
         self._set_visible(count > 0)
         self.card.refresh()
 
@@ -347,11 +426,12 @@ class SensorBar:
         self.show_card(letter)
 
     def show_card(self, letter: str) -> bool:
+        """Open the card of a box that has a tile in the bar; False if it has none."""
         letter = letter.upper()
-        if letter not in LETTERS or self.service.state(letter) is None:
-            return False
         tile = self.tiles.get(letter)
-        self.card.show_for(letter, tile if self.visible else None)
+        if not self.visible or tile is None or letter not in self.letters_shown():
+            return False
+        self.card.show_for(letter, tile)
         return True
 
     def _on_events(self, connected: list, disconnected: list) -> None:

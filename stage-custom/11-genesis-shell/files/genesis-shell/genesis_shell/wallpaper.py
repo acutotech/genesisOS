@@ -40,12 +40,13 @@ class WallpaperWindow:
 
     def _draw(self, _widget, cr) -> bool:
         geo = self.monitor.get_geometry()
-        pixbuf = self.manager.pixbuf_for(geo.width, geo.height)
-        cr.set_source_rgb(*FALLBACK_RGB)
+        surface = self.manager.surface_for(geo.width, geo.height)
+        if surface is None:
+            cr.set_source_rgb(*FALLBACK_RGB)
+        else:
+            # a cached surface: hovering a desktop icon redraws a small clip, not a whole conversion
+            cr.set_source_surface(surface, 0, 0)
         cr.paint()
-        if pixbuf is not None:
-            Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
-            cr.paint()
         return True
 
     def _on_press(self, _widget, event) -> bool:
@@ -74,6 +75,7 @@ class WallpaperManager:
         self.listeners: list = []   # called after the wallpaper changed (desktop label colours)
         self._original: tuple[str, GdkPixbuf.Pixbuf] | None = None
         self._scaled: dict[tuple, GdkPixbuf.Pixbuf] = {}
+        self._surfaces: dict[tuple, cairo.ImageSurface] = {}
         self._blur: dict[tuple, cairo.ImageSurface] = {}
         self._pending_blur: set[tuple] = set()
         self._failed_blur: set[tuple] = set()
@@ -146,6 +148,7 @@ class WallpaperManager:
         self._current = new
         self._original = None
         self._scaled.clear()
+        self._surfaces.clear()
         self._blur.clear()
         self._failed_blur.clear()
         for win in self.windows.values():
@@ -230,6 +233,25 @@ class WallpaperManager:
             return None
         self._scaled[key] = out
         return out
+
+    def surface_for(self, width: int, height: int) -> cairo.ImageSurface | None:
+        """The scaled wallpaper as a cairo surface on the fallback colour, converted once per size."""
+        key = (self._current, self.mode(), width, height)
+        if key in self._surfaces:
+            return self._surfaces[key]
+        pixbuf = self.pixbuf_for(width, height)
+        if pixbuf is None:
+            return None
+        surface = cairo.ImageSurface(cairo.FORMAT_RGB24, width, height)
+        cr = cairo.Context(surface)
+        cr.set_source_rgb(*FALLBACK_RGB)
+        cr.paint()
+        Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
+        cr.paint()
+        if len(self._surfaces) >= 4:   # sizes a monitor no longer has (mode changes)
+            self._surfaces.clear()
+        self._surfaces[key] = surface
+        return surface
 
     @staticmethod
     def _blank(width: int, height: int, has_alpha: bool = False) -> GdkPixbuf.Pixbuf:

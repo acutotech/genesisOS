@@ -237,11 +237,13 @@ application windows.
   Disturb behind the clock, and an unread badge. Super+N.
 * **Sensor bar** for the NodoAI sensor boxes A-K on the I2C bus (GPIO 2/3,
   `/dev/i2c-1`). It is hidden while no box is connected and fades in on the
-  right edge as soon as one answers, with one tile per connected box. A
-  click on a tile opens its card (I2C address, bus, connected since); click
-  it again or the × to close. Every box that connects or disconnects posts a
+  right edge as soon as one answers, with one tile per connected box (the
+  column scrolls if more boxes are connected than fit the screen). A click
+  on a tile opens its card (I2C address, bus, connected since); click it
+  again or the × to close. Every box that connects or disconnects posts a
   notification (several in the same scan share one), and clicking a
-  "connected" notification opens that box's card. The bus is scanned with
+  "connected" notification, as a toast or in the notification center, opens
+  that box's card. The bus is scanned with
   `i2cdetect -y 1 0x10 0x3a` every 2 s without blocking the shell; a box
   counts as gone after two missed scans (about 4 s), so a lost probe does not
   flash the bar. Boxes already connected at login show in the bar without a
@@ -250,10 +252,11 @@ application windows.
   K 0x38-0x3A.
 * **Desktop icons** for the files, folders and launchers in `~/Desktop`, plus
   Home and Trash, in columns from the top-left. Each label is black or white,
-  whichever contrasts more with the part of the wallpaper right behind it
-  (WCAG relative luminance), and is chosen again when the wallpaper changes.
-  Double-click opens, right-click offers Open, Show in Files and Move to
-  Trash; a launcher (`.desktop` file) runs only if it is executable.
+  whichever contrasts more with the part of the wallpaper right behind its
+  text (WCAG relative luminance), and is chosen again when the wallpaper or
+  the screen resolution changes. Double-click opens, right-click offers Open,
+  Show in Files and Move to Trash; a launcher (`.desktop` file) runs only if
+  it is executable or is a link to an application the system installed.
 * **On-screen display** for volume and brightness keys; **power dialog**
   (lock with swaylock, log out, restart, shut down) on Ctrl+Alt+Del or the
   power key; **screenshots** with Print (screen) and Shift+Print (area) into
@@ -527,7 +530,8 @@ imager/                         Genesis Imager (genesis_imager.py) and its tests
   The stock Raspberry Pi desktop is still available from the login screen's
   session menu.
 * **The sensor bar never appears although a box is plugged in:** run
-  `i2cdetect -y 1 0x10 0x3a` as your user. "No such file" means I2C is off
+  `/usr/sbin/i2cdetect -y 1 0x10 0x3a` as your user (`/usr/sbin` is not on a
+  normal user's `PATH`). "No such file" means I2C is off
   (Genesis Settings → Interfaces, then reboot); "Permission denied" means
   your user is not in the `i2c` group (`sudo adduser $USER i2c`, log out and
   in); an empty grid means the box does not answer (wiring, power, or an

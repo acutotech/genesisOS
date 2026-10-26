@@ -501,7 +501,7 @@ class NotificationList(Gtk.Box):
             close.set_valign(Gtk.Align.START)
             close.connect("clicked", lambda _b, item=n: svc.close(item, REASON_DISMISSED))
             row.pack_end(close, False, False, 0)
-            if n.desktop_entry:
+            if n.desktop_entry or any(k == "default" for k, _ in n.actions):
                 row_button = Gtk.EventBox()
                 row_button.set_visible_window(False)
                 row_button.add(row)
@@ -515,6 +515,7 @@ class NotificationList(Gtk.Box):
     def _open(self, n: Notification) -> bool:
         if any(k == "default" for k, _ in n.actions):
             self.shell.notifications.invoke(n, "default")
+            self.shell.notification_center.hide()   # whatever the action opens must not sit under the center
             return True
         info = desktop_app_info(n.desktop_entry)
         if info is not None:
