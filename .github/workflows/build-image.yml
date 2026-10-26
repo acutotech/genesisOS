@@ -223,7 +223,7 @@ jobs:
           cmp out/placeholder.txt stage-custom/14-first-boot/files/genesis-setup.txt
           rm out/placeholder.txt
           cp imager-build/dist/genesis-imager out/genesis-imager-linux-x86_64
-          ldd --version | head -1
+          ldd --version | sed -n 1p   # not head: ldd writes on after the first line, and SIGPIPE fails the step under pipefail
           ls -l out
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
