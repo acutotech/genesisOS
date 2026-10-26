@@ -46,13 +46,13 @@ if [ -z "${GENESIS_PREVIEW_INNER:-}" ]; then
 	python3 - "$XDG_CONFIG_HOME/genesis/shell.conf" << 'CONF'
 import configparser, os, sys
 path = sys.argv[1]
-conf = configparser.RawConfigParser(strict=False)
-conf.optionxform = str
+conf = configparser.RawConfigParser()   # keys lowercased and duplicates refused, as the shell reads them
 try:
     conf.read(path, encoding="utf-8")
-except (configparser.Error, UnicodeDecodeError):
-    conf = configparser.RawConfigParser()
-    conf.optionxform = str
+except (configparser.Error, UnicodeDecodeError) as exc:
+    # leave it as it is: the preview must fail the way the real desktop does
+    print(f"preview: WARNING your shell.conf cannot be read: {exc}")
+    sys.exit(0)
 wanted = {"sensors": {"enabled": "true", "notify": "true", "show_disconnected": "false"},
           "desktop": {"icons": "true", "show_home": "true", "show_trash": "true"}}
 for section, values in wanted.items():

@@ -287,6 +287,7 @@ class SensorBar:
         self.window.add(self.revealer)
         self.window.connect("delete-event", self._on_closed)
         self.room = TILE_STEP
+        self._reveal_card_tile = False
         self.tiles: dict[str, SensorTile] = {}
         self.card = SensorCard(self)
         self.window.connect("size-allocate", self._on_resized)
@@ -331,25 +332,37 @@ class SensorBar:
         self._size_column()
 
     def _size_column(self) -> None:
-        # the layer surface takes the window's minimum size, so the column's minimum is what it shows:
-        # every tile, or as many as there is room for, the last one cut in half so it is clear the rest scroll
+        # the layer surface takes the window's minimum height while the revealer gives the glass its
+        # natural height, so both are set to what the column shows: every tile, or as many as there
+        # is room for with the last one cut in half, so it is clear the rest scroll
         _min, natural = self.tiles_box.get_preferred_height()
         shown = natural
         if natural > self.room:
             shown = max(TILE_STEP // 2, ((self.room + 6) // TILE_STEP) * TILE_STEP - TILE_STEP // 2)
+        shown = max(1, shown)
         self.scroller.set_min_content_height(-1)
-        self.scroller.set_max_content_height(max(shown, self.room))
-        self.scroller.set_min_content_height(max(1, shown))
+        self.scroller.set_max_content_height(shown)
+        self.scroller.set_min_content_height(shown)
 
     def refit(self) -> bool:
         """The screen changed size (mode, scale, rotation) or the panel moved: size the column again."""
         self._fit()
         if self.card.visible:
+            self._reveal_card_tile = True   # once the shorter column is allocated (see _on_resized)
             self.card.place()
         return False
 
+    def _scroll_to(self, tile: Gtk.Widget) -> None:
+        alloc = tile.get_allocation()
+        if alloc.height > 1:
+            self.scroller.get_vadjustment().clamp_page(alloc.y, alloc.y + alloc.height)
+
     def _on_resized(self, _win, _alloc) -> None:
         if self.card.visible:
+            if self._reveal_card_tile and self.card.tile is not None:
+                # only now has the column its new page size; the user's own scrolling is left alone
+                self._reveal_card_tile = False
+                self._scroll_to(self.card.tile)
             self.card.place()
 
     def _on_closed(self, *_a) -> bool:
@@ -448,10 +461,7 @@ class SensorBar:
         tile = self.tiles.get(letter)
         if not self.visible or tile is None or letter not in self.letters_shown():
             return False
-        alloc = tile.get_allocation()
-        if alloc.height > 1:
-            # a tile scrolled out of the column comes into view first, so the card sits beside it
-            self.scroller.get_vadjustment().clamp_page(alloc.y, alloc.y + alloc.height)
+        self._scroll_to(tile)   # a tile scrolled out of the column comes into view first, so the card sits beside it
         self.card.show_for(letter, tile)
         return True
 

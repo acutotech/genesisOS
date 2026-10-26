@@ -247,6 +247,7 @@ class DesktopIcons:
         self._file_monitor: Gio.FileMonitor | None = None
         self._trash_monitor: Gio.FileMonitor | None = None
         self._trash_unwatchable = False
+        self._trash_watch_queued = False
         self.trash_full = False
         self.selected_key: str | None = None
         self.laid_out_for = (0, 0)
@@ -332,7 +333,8 @@ class DesktopIcons:
     def _sync_trash_watch(self) -> None:
         """Watch the Trash only while its icon is on the desktop."""
         wanted = self.enabled() and self.config.getbool("desktop", "show_trash")
-        if wanted and self._trash_monitor is None and not self._trash_unwatchable:
+        if wanted and self._trash_monitor is None and not self._trash_unwatchable and not self._trash_watch_queued:
+            self._trash_watch_queued = True
             GLib.idle_add(self._watch_trash)   # after the panels: through gvfs this is a D-Bus round trip
         elif not wanted and self._trash_monitor is not None:
             self._trash_monitor.cancel()
@@ -340,6 +342,9 @@ class DesktopIcons:
 
     def _watch_trash(self) -> bool:
         """Follow the Trash (through gvfs) so its icon shows whether it is empty."""
+        self._trash_watch_queued = False
+        if not (self.enabled() and self.config.getbool("desktop", "show_trash")):
+            return False   # turned off again before the idle ran
         if self._trash_monitor is None:
             try:
                 self._trash_monitor = Gio.File.new_for_uri("trash:///").monitor_directory(Gio.FileMonitorFlags.NONE, None)
@@ -391,13 +396,10 @@ class DesktopIcons:
         return EDGE, thickness + EDGE
 
     def screen_size(self) -> tuple[int, int]:
-        """The size the wallpaper is drawn at; never the icons' own container, which grows with them."""
-        area = self.host.area
-        width, height = area.get_allocated_width(), area.get_allocated_height()
-        if width <= 1 or height <= 1:
-            geo = self.host.monitor.get_geometry()
-            width, height = geo.width, geo.height
-        return width, height
+        """The size the wallpaper is drawn at: the monitor's. Not the icons' own container, which grows
+        with them, nor the wallpaper area, which is 200x200 until the compositor's first configure."""
+        geo = self.host.monitor.get_geometry()
+        return geo.width, geo.height
 
     def _on_resized(self, _widget, _alloc) -> None:
         # a new mode or scale on the same monitor: lay the icons out again for the new size
@@ -405,6 +407,7 @@ class DesktopIcons:
             self._queue_rebuild()
 
     def rebuild(self) -> None:
+        self._sync_trash_watch()   # rebuild also runs on `genesis-shell-ctl reload`, which skips _on_config
         for icon in self.icons:
             icon.destroy()
         self.icons = []
