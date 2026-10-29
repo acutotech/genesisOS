@@ -1,0 +1,26 @@
+#!/bin/sh
+# Started by labwc (autostart file of the Genesis config dir) once the
+# compositor is up. Launches the shell and the session helpers and keeps a log.
+
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/genesis"
+mkdir -p "$LOG_DIR"
+exec >> "$LOG_DIR/session.log" 2>&1
+echo "=== Genesis session start $(date -Is) on ${WAYLAND_DISPLAY:-?} ==="
+
+# Let D-Bus activated services (portals, notifications) see the compositor.
+if command -v dbus-update-activation-environment > /dev/null 2>&1; then
+	dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP XAUTHORITY 2> /dev/null
+fi
+if [ -x /usr/bin/create_xauth ] && [ -n "${DISPLAY:-}" ]; then
+	/usr/bin/create_xauth
+fi
+
+if command -v kanshi > /dev/null 2>&1; then
+	kanshi &
+fi
+
+/usr/bin/genesis-respawn --fallback /usr/bin/genesis-fallback /usr/bin/genesis-shell &
+/usr/bin/genesis-idle &
+/usr/bin/genesis-xdg-autostart &
+
+wait

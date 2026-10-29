@@ -2,13 +2,14 @@
 # Privileged helper for Genesis Settings. Runs as root via sudo/pkexec.
 #
 #   genesis-helper get <item>                 (works unprivileged)
-#   genesis-helper set <item> 0|1             items: i2c spi serial_hw serial_cons onewire ssh vnc camera blanking splash sudo_nopass autologin
-#   genesis-helper session wayfire|labwc      default desktop session for lightdm
+#   genesis-helper set <item> 0|1             items: i2c spi serial_hw serial_cons onewire ssh vnc camera splash sudo_nopass autologin
+#   genesis-helper session genesis|rpd        default desktop session for lightdm (Genesis, or Raspberry Pi's labwc desktop)
 #   genesis-helper greeter-wallpaper <file>   login screen wallpaper
 #   genesis-helper hostname <name>
 #   genesis-helper timezone <Area/City>
 #   genesis-helper locale <xx_YY.UTF-8>
 #   genesis-helper wifi-country <CC>
+#   genesis-helper bootloader-first auto|sd|nvme|usb|keep   Pi 5 EEPROM: drive tried first (applied at the next reboot)
 set -eu
 
 RC=/usr/bin/raspi-config
@@ -34,11 +35,10 @@ get_item() {
 		camera) "$RC" nonint get_camera ;;
 		ssh) "$RC" nonint get_ssh ;;
 		vnc) unit_enabled wayvnc.service ;;
-		blanking) "$RC" nonint get_blanking ;;
 		splash) "$RC" nonint get_boot_splash ;;
 		sudo_nopass) "$RC" nonint get_sudo_pass ;;
 		autologin) "$RC" nonint get_autologin ;;
-		session) cat /etc/genesis/session 2> /dev/null || echo labwc ;;
+		session) cat /etc/genesis/session 2> /dev/null || echo rpd ;;
 		*) die "unknown item $1" ;;
 	esac
 }
@@ -65,7 +65,6 @@ set_item() {
 				systemctl disable wayvnc.service || true
 				systemctl stop wayvnc.service || true
 			fi ;;
-		blanking) "$RC" nonint do_blanking "$val" ;;
 		splash) "$RC" nonint do_boot_splash "$val" ;;
 		sudo_nopass) "$RC" nonint do_sudo_pass "$val" ;;
 		autologin) if [ "$val" = 0 ]; then "$RC" nonint do_boot_behaviour B4; else "$RC" nonint do_boot_behaviour B3; fi ;;
@@ -77,9 +76,9 @@ set_session() {
 	need_root
 	local name="$1" session
 	case "$name" in
-		wayfire) session=genesis-glass; [ -f /usr/share/wayland-sessions/genesis-glass.desktop ] || die "the Genesis Glass session is not installed" ;;
-		labwc) session=rpd-labwc; [ -f /usr/share/wayland-sessions/rpd-labwc.desktop ] || session=LXDE-pi-labwc ;;
-		*) die "session must be wayfire or labwc" ;;
+		genesis | wayfire) name=genesis; session=genesis; [ -f /usr/share/wayland-sessions/genesis.desktop ] || die "the Genesis session is not installed" ;;
+		rpd | labwc) name=rpd; session=rpd-labwc; [ -f /usr/share/wayland-sessions/rpd-labwc.desktop ] || session=LXDE-pi-labwc ;;
+		*) die "session must be genesis or rpd" ;;
 	esac
 	local conf=/etc/lightdm/lightdm.conf
 	[ -f "$conf" ] || die "$conf not found"
@@ -115,5 +114,9 @@ case "${1:-}" in
 	timezone) need_root; "$RC" nonint do_change_timezone "${2:?zone}" ;;
 	locale) need_root; "$RC" nonint do_change_locale "${2:?locale}" ;;
 	wifi-country) need_root; "$RC" nonint do_wifi_country "${2:?country}" ;;
-	*) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+	bootloader-first)
+		need_root
+		case "${2:-}" in auto | sd | nvme | usb | keep) ;; *) die "bootloader-first takes auto, sd, nvme, usb or keep" ;; esac
+		exec /usr/lib/genesis/genesis-eeprom first "$2" ;;
+	*) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

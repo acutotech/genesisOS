@@ -1,0 +1,90 @@
+#!/bin/sh
+# Control the running Genesis Shell over D-Bus (org.genesis.Shell).
+#
+# Usage: genesis-shell-ctl COMMAND [ARG...]
+#   launcher | control-center | notifications | hide | power | lock | logout
+#   volume-up | volume-down | volume-mute | brightness-up | brightness-down
+#   screenshot [screen|area]      take a screenshot into ~/Pictures/Screenshots
+#   shot FILE                     save a screenshot to FILE (smoke tests)
+#   osd ICON FRACTION [TEXT]      show the on-screen display
+#   wallpaper FILE                set the wallpaper
+#   notify SUMMARY [BODY]         post a notification
+#   sensor LETTER | sensor-close  open (or close) the card of sensor box LETTER
+#   reload                        reload theme and configuration
+#   state                         print the shell state as JSON
+#   quit
+
+set -e
+DEST=org.genesis.Shell
+OBJ=/org/genesis/Shell
+
+quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")"; }
+
+call() {
+	method=$1
+	shift
+	# shellcheck disable=SC2068  # arguments are already individually quoted GVariant literals
+	gdbus call --session --dest "$DEST" --object-path "$OBJ" --method "$DEST.$method" "$@"
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+	launcher) call ToggleLauncher > /dev/null ;;
+	show-launcher) call ShowLauncher > /dev/null ;;
+	hide-launcher) call HideLauncher > /dev/null ;;
+	control-center | cc) call ToggleControlCenter > /dev/null ;;
+	notifications | nc) call ToggleNotificationCenter > /dev/null ;;
+	hide) call HideOverlays > /dev/null ;;
+	power) call ShowPower > /dev/null ;;
+	lock) call Lock > /dev/null ;;
+	logout) call Logout > /dev/null ;;
+	volume-up) call VolumeUp > /dev/null ;;
+	volume-down) call VolumeDown > /dev/null ;;
+	volume-mute) call VolumeMute > /dev/null ;;
+	brightness-up) call BrightnessUp > /dev/null ;;
+	brightness-down) call BrightnessDown > /dev/null ;;
+	screenshot) call Screenshot "$(quote "${1:-screen}")" > /dev/null ;;
+	shot)
+		[ -n "${1:-}" ] || { echo "usage: genesis-shell-ctl shot FILE" >&2; exit 64; }
+		out=$(call ScreenshotTo "$(quote "$1")")
+		case "$out" in *true*) ;; *) echo "screenshot failed" >&2; exit 1 ;; esac
+		;;
+	osd)
+		[ -n "${2:-}" ] || { echo "usage: genesis-shell-ctl osd ICON FRACTION [TEXT]" >&2; exit 64; }
+		call ShowOsd "$(quote "$1")" "$2" "$(quote "${3:-}")" > /dev/null
+		;;
+	wallpaper)
+		[ -n "${1:-}" ] || { echo "usage: genesis-shell-ctl wallpaper FILE" >&2; exit 64; }
+		out=$(call SetWallpaper "$(quote "$(realpath "$1")")")
+		case "$out" in *true*) ;; *) echo "wallpaper rejected: $1" >&2; exit 1 ;; esac
+		;;
+	notify) call Notify "$(quote "${1:-Genesis}")" "$(quote "${2:-}")" > /dev/null ;;
+	sensor)
+		[ -n "${1:-}" ] || { echo "usage: genesis-shell-ctl sensor LETTER" >&2; exit 64; }
+		out=$(call ShowSensor "$(quote "$1")")
+		case "$out" in *true*) ;; *) echo "sensor box $1 is not in the sensor bar (not connected?)" >&2; exit 1 ;; esac
+		;;
+	sensor-close) call HideSensor > /dev/null ;;
+	reload) call ReloadTheme > /dev/null ;;
+	state)
+		# JSON may contain quotes that gdbus would re-escape; read the string with GIO instead
+		python3 - << 'PYEOF'
+import sys
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+try:
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    result = bus.call_sync("org.genesis.Shell", "/org/genesis/Shell", "org.genesis.Shell", "GetState",
+                           None, GLib.VariantType("(s)"), Gio.DBusCallFlags.NONE, 5000, None)
+except GLib.Error as exc:
+    print(f"genesis-shell-ctl: {exc.message}", file=sys.stderr)
+    sys.exit(1)
+print(result.unpack()[0])
+PYEOF
+		;;
+	quit) call Quit > /dev/null ;;
+	help | -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0" ;;
+	*) echo "genesis-shell-ctl: unknown command '$cmd' (try --help)" >&2; exit 64 ;;
+esac

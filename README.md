@@ -1,16 +1,20 @@
 # Genesis OS
 
 A custom Raspberry Pi OS image for the **NodoAI box**: 64-bit Raspberry Pi OS
-Desktop (Debian trixie) with a dark "liquid glass" look, your logo on the
-boot splash, login screen and app menu, Visual Studio Code, Python 3.10 and
-3.13, Chromium, a Genesis Settings app, and the hardware interfaces switched
-on. Built with [pi-gen](https://github.com/RPi-Distro/pi-gen), the tool that
-produces the official images, in **GitHub Actions** or **locally with
-Docker**.
+(Debian trixie) running **Genesis Shell**, a desktop written for this image:
+floating glass panel, full-screen app launcher, control center, notifications,
+on-screen display, power dialog and wallpaper, all drawn by our own code on top
+of labwc, the compositor Raspberry Pi ships and tests on the Pi 5. Plus the
+Genesis logo on the boot splash and login screen, Visual Studio Code, Python
+3.10 and 3.15 for your code (the OS keeps its own 3.13), Chromium, a Genesis
+Settings app, and the hardware interfaces
+switched on. Built with [pi-gen](https://github.com/RPi-Distro/pi-gen), the
+tool that produces the official images, in **GitHub Actions** or **locally
+with Docker**.
 
 Output: `image_<date>-genesis-os-desktop.img.xz`, flashable with Raspberry
-Pi Imager, plus a package list (`.info`), the build log and, from CI,
-`SHA256SUMS`.
+Pi Imager, plus a package list (`.info`), `SHA256SUMS`, and the screenshots
+of the desktop that CI took inside the image before publishing it.
 
 ## What the image contains
 
@@ -18,35 +22,52 @@ Pi Imager, plus a package list (`.info`), the build log and, from CI,
 | --- | --- | --- |
 | Base | Raspberry Pi OS Desktop, trixie, arm64 (Pi 5 first; also Pi 4, 400, 500, CM4/CM5, Zero 2 W, Pi 3) | `BASE_STAGES` in `config` |
 | Hostname | `nodobox`, reachable as `nodobox.local` | `config` |
-| User | `nodoai`; password from secret `FIRST_USER_PASS` | `config`, secrets |
-| Wi-Fi | network from secrets `WIFI_SSID` / `WIFI_PASSWORD`, country `IN` | secrets, `config` |
+| User | `nodoai`; the password is typed into **Genesis Imager** while flashing (the image itself has none) | Genesis Imager; `config` for the built-in name |
+| Wi-Fi | `NodoAI`, passphrase typed into Genesis Imager; country `IN` | Genesis Imager; `config` |
 | Locale, keyboard, time zone | `en_US.UTF-8`, `us`, `Asia/Kolkata` | `config` |
-| Desktop session | **Genesis Glass**: Wayfire 0.9 with background blur, animations, shadows. Fallback: Raspberry Pi's labwc session, selectable at login or in Genesis Settings | `GENESIS_SESSION` in `stage-custom/custom.conf` |
-| Look | GTK theme *GenesisGlass* (translucent panel, frosted menus, rounded corners, steel-blue accent), Inter + JetBrains Mono fonts, Genesis icon theme (logo as the menu icon), 5 wallpapers | `stage-custom/11-glass-theme`, `stage-custom/10-branding` |
-| Boot | Plymouth splash with the Genesis logo, boot straight into the desktop as `nodoai` | `ENABLE_BOOT_SPLASH`, `DESKTOP_AUTOLOGIN` |
-| Apps | Visual Studio Code (Microsoft repository) with the Python extensions, Chromium as default browser, the full Raspberry Pi desktop application set | `INSTALL_VSCODE`, `VSCODE_EXTENSIONS`, `DEFAULT_BROWSER` |
-| Python | `python` = CPython 3.10.22 under `/opt/python` (user default, VS Code interpreter); `python3` = the OS's 3.13; `uv` installed for more versions | `PYTHON_PRIMARY` |
+| Desktop | **Genesis** session: labwc + Genesis Shell (see below). Raspberry Pi's stock labwc desktop stays installed as a fallback, selectable on the login screen | `stage-custom/11-genesis-shell` |
+| Look | dark glass: translucent panel and cards over a blurred copy of the wallpaper, 16px rounded corners, steel-blue accent, Inter + JetBrains Mono, Papirus icons, five wallpapers | `GENESIS_ACCENT`, `GENESIS_WALLPAPER` in `custom.conf`; Genesis Settings |
+| Boot | Plymouth splash with the Genesis logo, straight into the desktop as `nodoai` | `ENABLE_BOOT_SPLASH`, `DESKTOP_AUTOLOGIN` |
+| Apps | Visual Studio Code (Microsoft repository) with the Python extensions, Chromium as default browser, the Raspberry Pi desktop application set | `INSTALL_VSCODE`, `VSCODE_EXTENSIONS`, `DEFAULT_BROWSER` |
+| Python | for you: `python` = CPython 3.10.22 (default, VS Code interpreter) and `python3.15` = 3.15.1, the newest stable release, both under `/opt/python`; for the system: `python3` = the OS's 3.13, left alone; `uv` for more versions; `genesis-python` lists them all | `PYTHON_PRIMARY`, `PYTHON_LATEST` |
 | Interfaces | I2C, SPI, serial port (UART on GPIO 14/15, Pi 5 `uart0`), SSH, VNC (wayvnc) on; serial console and 1-Wire off | `ENABLE_*` in `custom.conf` |
-| Settings | **Genesis Settings** (interfaces, system, appearance incl. wallpaper and session, connectivity, display and sound, software, about) plus Raspberry Pi Configuration and Appearance Settings | `stage-custom/12-genesis-settings` |
-| Panel | Raspberry Pi panel at the top: menu, launchers (Chromium, VS Code, Files, Terminal, Genesis Settings), window list, tray, power, updater, Bluetooth, Wi-Fi, volume, clock | `GENESIS_PANEL_*` |
-| Behaviour | persistent journal, automatic security updates, cloud-init seed files on the boot partition | `custom.conf` |
+| Settings | **Genesis Settings** (interfaces, system, appearance, connectivity, display and sound, software, about) plus Raspberry Pi Configuration | `stage-custom/12-genesis-settings` |
+| Behaviour | persistent journal, automatic security updates, cloud-init seed files on the boot partition, screen blanks after 10 minutes | `custom.conf` |
 
 Why these choices, in two sentences each:
 
-* **Wayfire, not a from-scratch desktop.** Real blur needs a compositor that
-  renders it; Raspberry Pi's labwc refuses blur by design, and a new desktop
-  environment is years of work. Wayfire is in the Raspberry Pi trixie archive,
-  runs the stock Pi panel, desktop and VNC server unchanged, and ran Raspberry
-  Pi OS by default on Pi 4/5 in Bookworm, so performance on a Pi 5 is known.
-  Raspberry Pi no longer supports it officially, which is why the labwc session
-  stays installed and the build falls back to it if the package disappears.
-* **Python 3.10 as `python`, not as `python3`.** The OS, apt and raspi-config
-  run on the system 3.13; replacing it breaks them. 3.10.22 is the last 3.10
-  release and the series is end-of-life, so plan to move your code to 3.12 or
-  3.13 (`uv python install 3.12` is one command). The Raspberry Pi libraries
-  the OS ships (`gpiozero`, `rpi-lgpio`, `picamera2`) live in the system 3.13;
-  in 3.10 install what you need with `pip install gpiozero rpi-lgpio` or run
-  `python3`.
+* **Our own shell, not our own compositor.** What a user sees and touches is
+  the shell (panel, launcher, menus, notifications), so that is what we wrote;
+  a Wayland compositor is years of work and would be less finished than
+  labwc, which Raspberry Pi maintains and tunes for the Pi 5's GPU. The first
+  attempt (Wayfire plus Raspberry Pi's panel) booted to a white screen and
+  was replaced.
+* **Glass without compositor blur.** labwc does not blur what is behind a
+  window, so the shell draws each surface over a pre-blurred, darkened copy
+  of the wallpaper; the panel, launcher, cards and dialogs look frosted at
+  zero GPU cost, and windows under the panel are never there anyway because
+  the panel reserves its space.
+* **Two Pythons for you, one for the system, kept apart.** The system's
+  Python is Debian's 3.13 at `/usr/bin/python3`: apt, raspi-config, the
+  desktop shell and Genesis Settings run on it, and their GTK and apt modules
+  are compiled for it, so it is the right version and stays untouched
+  (`pip` refuses to install into it). Your Pythons are self-contained builds
+  under `/opt/python/<version>` that nothing in the OS uses:
+  3.10.22 as `python` / `pip` (also `python3.10`, `pip3.10`) and 3.15.1 as
+  `python3.15` / `pip3.15`. `pip install` without a virtual environment goes
+  to `~/.local`. A user Python of the system's own series (3.13) is refused
+  at build time: it would share `~/.local/lib/python3.13` with the desktop.
+  Two things to know: 3.10.22 is the last 3.10 release and the series is
+  end-of-life, so plan to move your code on; and 3.15 is new, so some
+  packages have no aarch64 wheels for it yet (`uv python install 3.14` is one
+  command away). The Raspberry Pi libraries the OS ships (`gpiozero`,
+  `rpi-lgpio`, `picamera2`) live in the system 3.13; in your Pythons install
+  what you need with `pip install gpiozero rpi-lgpio`, or run `python3`.
+* **Credentials come from the imager, not the image.** A password baked into
+  the image is the same on every box and readable by anyone who has the
+  image (this repository is public). Genesis Imager writes a salted hash of
+  the password you type, plus Wi-Fi and the other settings, onto the card
+  while flashing; the box applies them on first boot and erases them.
 
 ## Quick start (GitHub Actions)
 
@@ -57,36 +78,131 @@ Why these choices, in two sentences each:
    `FIRST_USER_PASS` or `WIFI_PASSWORD` into it unless you set the repository
    variable `ALLOW_SECRETS_IN_PUBLIC_IMAGE` to `true`. For a product image with
    a known default password, make the repository private.
-2. Add the repository secrets under *Settings → Secrets and variables →
-   Actions*:
+2. Nothing else is needed: the user's password and the Wi-Fi passphrase are
+   entered in Genesis Imager when flashing. Only if you want them baked into
+   the image instead (a private repository; every box then shares them), add
+   repository secrets under *Settings → Secrets and variables → Actions*:
 
    | Secret | Value for the NodoAI box |
    | --- | --- |
-   | `FIRST_USER_PASS` | `root@nodoai`. Must not contain `"`, `$`, `` ` `` or `\` (pi-gen limitation; the workflow checks) |
-   | `WIFI_SSID` | `NodoAI` |
-   | `WIFI_PASSWORD` | `nodoai@123` |
+   | `FIRST_USER_PASS` | the login password for `nodoai` (keep it out of the repository; it must not contain `"`, `$`, `` ` `` or `\`, a pi-gen limitation the workflow checks) |
+   | `WIFI_SSID` | the network name the box joins (`NodoAI` for the product network) |
+   | `WIFI_PASSWORD` | that network's passphrase |
    | `SSH_AUTHORIZED_KEYS` | optional: your public key(s) |
 
-3. *Actions → Build image → Run workflow*, or push to `main`. Expect roughly
-   40-70 minutes for the desktop build on the arm64 runner; `ubuntu-latest`
-   (x86-64 with QEMU) takes several times longer.
-4. Download the `genesis-os` artifact and unzip it.
-5. Flash `image_*.img.xz`: Raspberry Pi Imager (*Use custom*), or
-   `xzcat image_*.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync`.
-   If you let Imager apply its own *OS customisation*, it overwrites the
-   `user-data` and `network-config` files this image ships.
-6. Tag a commit `v1.2.3` and push the tag: the workflow attaches the image to a
-   GitHub release.
+3. *Actions → Build image → Run workflow*, or push to `main`. The workflow
+   first lints, dry-runs the stage and renders the shell headless on an arm64
+   container (about 5 minutes; screenshots in the `genesis-shell-preview`
+   artifact), then builds the image (about 20 minutes on the arm64 runner),
+   then writes the image through Genesis Imager with a test user, runs the
+   first boot inside it and checks the account, password, Wi-Fi and locale,
+   starts the Genesis session as that user and screenshots it
+   (`genesis-image-smoke` artifact). Any failure, or a blank desktop, fails
+   the build.
+4. Download the `genesis-os` artifact and unzip it, and the Genesis Imager app
+   for your computer (`genesis-imager-windows-x64`, `-macos-arm64` or
+   `-linux-x86_64` artifact; tagged releases carry both).
+5. Flash it with **Genesis Imager** (next section): pick the image, the card,
+   type the password and the Wi-Fi passphrase, *Write*.
+6. Tag a commit `v1.2.3` and push the tag: the workflow attaches the image and
+   the Genesis Imager apps to a GitHub release.
+
+## Genesis Imager
+
+The tool that writes Genesis OS onto a card **with your user, password and
+Wi-Fi**, so the box boots straight into the desktop, on the network, with
+nothing to type on it. One Python file using only the standard library
+([`imager/genesis_imager.py`](imager/genesis_imager.py)); CI also builds it
+into apps for Windows, macOS (Apple silicon) and Linux.
+
+| Field | Default |
+| --- | --- |
+| Image | *Download latest* (the newest GitHub release, checksum-verified) or *Choose file* (`.img`, `.img.xz`, `.img.gz`, or the `.zip` artifact) |
+| Storage | removable cards and USB drives only; the disk your computer runs from is never listed |
+| User name, password | `nodoai`, password required (the image has none) |
+| Host name | `nodobox` (`nodobox.local`) |
+| Wi-Fi | `NodoAI`, passphrase, country `IN`, hidden network option |
+| Time zone, keyboard | `Asia/Kolkata`, `us` |
+| SSH | on; optional public keys; optional "key logins only" |
+
+It writes the whole card, partition table last, reads it back to verify, and
+ejects it. Your choices except the passwords are remembered for next time.
+Before erasing anything it lists the disks again and stops if the selected
+one changed (a card swapped since the list was made); the disk your computer
+runs from is never offered, not even with *Show fixed disks*. It checks the
+settings the way the box will: a user name that is already a system account
+or group (`games`, `video`, ...), a Wi-Fi passphrase over 63 bytes, a
+country that is not an ISO code (`UK` is `GB`), a time zone written in the
+wrong letter case (`europe/london`) or in an area that does not exist, or "key
+logins only" without a key are refused before writing. A zone your computer
+does not know (its time zone data may be older than the box's) is passed on,
+and the box reports it in `genesis-setup-result.txt` if it does not know it
+either.
+
+* **Windows:** run `genesis-imager-windows-x64.exe`; it asks for administrator
+  rights (needed to write a disk). SmartScreen may warn about an unsigned app:
+  *More info → Run anyway*.
+* **macOS:** unzip, then right-click *Genesis Imager* → *Open* the first time
+  (the app is not notarised). It asks for your password when writing.
+* **Linux:** `chmod +x genesis-imager-linux-x86_64 && ./genesis-imager-linux-x86_64`
+  (asks for your password through polkit; needs glibc 2.35 or newer: Ubuntu
+  22.04, Debian 12 or later), or on any distribution `python3 imager/genesis_imager.py`
+  (with `python3-tk` for the window).
+
+Command line (any OS with Python 3.9+, no window needed):
+
+```sh
+python3 imager/genesis_imager.py --list-devices
+sudo python3 imager/genesis_imager.py --image genesis-os.img.xz --device /dev/sdX --user nodoai
+# or write a customised image file and flash it with any tool you like:
+python3 imager/genesis_imager.py --image genesis-os.img.xz --output nodobox.img --user nodoai
+```
+
+It prompts for the password and the Wi-Fi passphrase; `--help` lists every
+option (`--wifi-ssid ""` for no Wi-Fi, `--ssh-key-file`, `--ssh-keys-only`,
+`--timezone`, `--keyboard`, `--hostname`, `--no-ssh`, `--image latest`). For
+scripts, `--password-file` and `--wifi-password-file` read the secrets from
+files or, with `-`, from standard input (password first): `--password` and
+`--wifi-password` work too, but everything on a command line is visible to
+other users in the process list and lands in sudo's log. A file written with
+`--output` contains the Wi-Fi passphrase and the password hash, so it is
+created readable only by you; delete it once the card is written.
+
+**How it works.** The image's boot partition holds `genesis-setup.txt`, a
+placeholder of 16 blocks of 512 bytes, each starting with a marker. While
+streaming the image to the card the imager finds those blocks (inside the
+boot partition only, at sector boundaries, each exactly once) and replaces
+them with your settings: `KEY=VALUE` lines with the password as a SHA-512
+crypt hash (100 000 rounds, random salt) and free text base64-encoded. Nothing
+in the file system changes size or place, so no FAT code is involved. On the
+first boot `genesis-firstboot.service` runs before Raspberry Pi's first-boot
+wizard, the login screen, NetworkManager and SSH, applies the settings (the
+account through Raspberry Pi's own `userconf-pi`, which renames the user,
+sets the password, cancels the wizard and keeps desktop autologin), writes a
+summary without secrets to `genesis-setup-result.txt` on the boot partition,
+and overwrites the settings with the placeholder again.
+
+Flashing with Raspberry Pi Imager, balenaEtcher or `dd` still works: the
+placeholder is left alone and the standard Raspberry Pi wizard asks for a
+user name and password on the first boot.
 
 ## First boot
 
-With the secrets above set, the box boots to the Genesis splash, logs
-`nodoai` into the Genesis Glass desktop, joins the `NodoAI` Wi-Fi, and
-answers on `nodobox.local` for SSH and VNC with the password `root@nodoai`.
-Without `FIRST_USER_PASS` the image behaves like the official one: the
-first-boot wizard asks for a username and password.
+Flashed with Genesis Imager, the box boots to the Genesis splash, logs your
+user into the Genesis desktop, joins the Wi-Fi, and answers on
+`nodobox.local` (or the host name you chose) for SSH and VNC with the password
+you typed. `genesis-setup-result.txt` on the boot partition says what was
+applied; `/var/log/genesis-firstboot.log` on the box has the details. On a
+Raspberry Pi 5 the first boot also stages the Genesis bootloader settings
+(boot order for the medium it booted from, see *Bootloader* below); the
+bootloader takes them at the next reboot.
 
-| At build time you set | What happens on first boot |
+Flashed with any other tool, the image behaves like the official one: the
+first-boot wizard asks for a user name and password. The build-time secrets
+below are the older alternative for private repositories; a password baked
+in at build time is shared by every box flashed from that image.
+
+| At build time you set | What happens on first boot (without Genesis Imager) |
 | --- | --- |
 | `FIRST_USER_PASS` (optionally `SSH_AUTHORIZED_KEYS`) | the user exists with that password, SSH and VNC are up: `ssh nodoai@nodobox.local`, any VNC viewer on `nodobox.local:5900`. |
 | only `SSH_AUTHORIZED_KEYS` | **not usable headless.** pi-gen creates the user with `adduser --disabled-login`, which on trixie sets the shell to `/usr/sbin/nologin` until a password is set, so SSH refuses the key login, and the first-boot wizard runs. Set `FIRST_USER_PASS` as well; the workflow prints a warning if you don't. |
@@ -101,26 +217,76 @@ channels are allowed.
 
 ## The desktop
 
-* **Genesis Glass** (default) is Wayfire with `~/.config/wayfire.ini` seeded
-  from `/etc/wayfire/genesis.ini`: kawase blur behind the panel, menus and
-  terminal, zoom animations, drop shadows, wobbly windows, rounded panel
-  controls. Super+B toggles blur live; Super+E shows all windows; Super+I
-  opens Genesis Settings; Ctrl+Alt+T opens a terminal; Print takes a
-  screenshot into `~/Pictures`. `wcm` (Wayfire Config Manager) edits every
-  option graphically.
-* **Raspberry Pi labwc** is the stock session with the same theme, rounded
-  titlebars and shadows but no blur. Switch in Genesis Settings → Appearance
-  → Desktop session, or pick it on the login screen. It is also what the
-  image falls back to if Wayfire ever leaves the Raspberry Pi archive.
-* **Genesis Settings** (menu, panel, Super+I) drives `raspi-config` for
+Genesis Shell is one Python/GTK process per session (about 70 MB, idle at 0%
+CPU) drawing on wlr-layer-shell surfaces; labwc places and decorates the
+application windows.
+
+* **Panel** (floating, top): Genesis logo opens the launcher; the dock shows
+  pinned apps (Chromium, VS Code, Files, Terminal, Genesis Settings) and
+  every running app with an indicator, click to focus or minimise,
+  right-click for windows, pin/unpin, close; the clock opens the calendar and
+  notification center; the status pill (network, Bluetooth, volume, battery
+  when present) opens the control center.
+* **Launcher**: full-screen over the blurred wallpaper, search box with
+  type-ahead, category chips, keyboard navigation, user and power buttons.
+  Super, Super+Space or Super+A.
+* **Control center**: volume and output device, brightness when a backlight
+  exists, tiles for Wi-Fi (with a network list and password entry),
+  Bluetooth (paired devices, connect/disconnect, pairing through Blueman),
+  Do Not Disturb, Night Light (when `wlsunset` is installed), screenshot and
+  display settings; lock, settings and power buttons. Super+C.
+* **Notifications**: a real `org.freedesktop.Notifications` server with
+  toasts (actions, images, urgency), a notification center with Do Not
+  Disturb behind the clock, and an unread badge. Super+N.
+* **Sensor bar** for the NodoAI sensor boxes A-K on the I2C bus (GPIO 2/3,
+  `/dev/i2c-1`). It is hidden while no box is connected and fades in on the
+  right edge as soon as one answers, with one tile per connected box (the
+  column scrolls if more boxes are connected than fit the screen). A click
+  on a tile opens its card (I2C address, bus, connected since); click it
+  again or the × to close. Every box that connects or disconnects posts a
+  notification (several in the same scan share one), and clicking the
+  "connected" notification of a single box, as a toast or in the notification
+  center, opens its card. The bus is scanned with
+  `i2cdetect -y 1 0x10 0x3a` every 2 s without blocking the shell; a box
+  counts as gone after two missed scans (about 4 s), so a lost probe does not
+  flash the bar. Boxes already connected at login show in the bar without a
+  notification. `genesis-shell-ctl sensor C` opens a card, `sensor-close`
+  closes it. Box addresses: A 0x10-0x12, B 0x14-0x16, then every 4 up to
+  K 0x38-0x3A.
+* **Desktop icons** for the files, folders and launchers in `~/Desktop`, plus
+  Home and Trash, in columns from the top-left. Each label is black or white,
+  whichever contrasts more with the part of the wallpaper right behind its
+  text (WCAG relative luminance), and is chosen again when the wallpaper or
+  the screen resolution changes. Double-click opens, right-click offers Open,
+  Show in Files and Move to Trash; a launcher (`.desktop` file) runs only if
+  it is executable or is a link to an application the system installed.
+* **On-screen display** for volume and brightness keys; **power dialog**
+  (lock with swaylock, log out, restart, shut down) on Ctrl+Alt+Del or the
+  power key; **screenshots** with Print (screen) and Shift+Print (area) into
+  `~/Pictures/Screenshots`, copied to the clipboard.
+* **Windows**: rounded server-side decorations with shadows, Super+arrows to
+  snap and maximise, Super+Q to close, Alt+Tab switcher with previews, four
+  workspaces (Super+1..4, Super+Shift+1..4 to move), Ctrl+Alt+M magnifier.
+  Super+Return or Super+T opens a terminal, Super+E the file manager,
+  Super+B the browser, Super+I Genesis Settings, Super+L locks.
+* **Genesis Settings** (menu, dock, Super+I) drives `raspi-config` for
   interfaces, hostname, time zone, locale, boot options and Wi-Fi country,
-  controls wayvnc, switches wallpapers and sessions, and links to the
-  Raspberry Pi tools for screens, sound, networks and software. Privileged
-  changes prompt for the password through the Pi's askpass dialog, or run
-  silently if `PASSWORDLESS_SUDO="1"`.
-* One caveat: Raspberry Pi Configuration's own *VNC* switch only recognises
-  the labwc session. Under Genesis Glass use the VNC switch in Genesis
-  Settings; it manages the same wayvnc service.
+  controls wayvnc, and on its Appearance page sets the wallpaper, accent
+  colour, panel position, glass opacity and screen blanking, which the shell
+  applies live. Privileged changes prompt for the password through the Pi's
+  askpass dialog, or run silently if `PASSWORDLESS_SUDO="1"`.
+* **Configuration**: `/etc/genesis/shell.conf` (image defaults, rendered
+  from `custom.conf`) overlaid by `~/.config/genesis/shell.conf`; labwc
+  config in `/etc/xdg/genesis/labwc/` (copy to `~/.config/genesis/labwc/`
+  to customise keybindings or the theme); `genesis-shell-ctl --help` lists
+  the commands keybindings use. `[sensors]` sets `enabled`, `bus`, `poll_ms`,
+  `notify` and `show_disconnected` (all eleven tiles with absent boxes dimmed;
+  the bar still hides when no box is connected); `enabled` and `bus` apply at
+  the next login. `[desktop]` sets `icons`, `show_home` and `show_trash`.
+* **Testing without a Pi**: `/usr/share/genesis-shell/preview.sh DIR` starts
+  the whole session on a virtual output and writes screenshots to DIR. CI
+  runs it on a trixie container before building and inside the finished
+  image after building.
 
 ## Customising the image
 
@@ -148,11 +314,12 @@ know, so nothing can apply to one build path only. Keep secrets out of it.
 | Knob | Does |
 | --- | --- |
 | `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_HIDDEN`, `WIFI_INTERFACE` | Wi-Fi written to `/boot/firmware/network-config` |
-| `ENABLE_I2C`, `ENABLE_SPI`, `ENABLE_UART` | `dtparam=i2c_arm=on`, `dtparam=spi=on`, `enable_uart=1` in `config.txt` |
+| `ENABLE_I2C`, `ENABLE_SPI`, `ENABLE_SERIAL_PORT` | `dtparam=i2c_arm=on`, `dtparam=spi=on`, `enable_uart=1` in `config.txt` |
 | `CONFIG_TXT_EXTRA` | any further `config.txt` lines, appended under `[all]` |
 | `PERSISTENT_JOURNAL`, `JOURNAL_MAX_USE` | journald storage |
 | `ENABLE_UNATTENDED_UPGRADES` | automatic updates from Debian security and the Raspberry Pi archive |
 | `ENABLE_SERVICES`, `DISABLE_SERVICES` | systemd units to `enable` / `disable` in the image |
+| `EEPROM_CUSTOMIZE`, `EEPROM_BOOT_FIRST`, `EEPROM_PCIE_PROBE`, `EEPROM_NET_INSTALL_AT_POWER_ON`, `EEPROM_POWER_OFF_ON_HALT` | Raspberry Pi 5 bootloader settings, applied on the Pi (see below) |
 
 Every knob can also be set as an environment variable for a local build
 (`ENABLE_I2C=1 make build`). Secrets go in `stage-custom/secrets.env`
@@ -187,6 +354,61 @@ Sub-stages run in name order; `90-services` runs last on purpose so
 `ENABLE_SERVICES` can refer to units your own sub-stages install. `make test`
 fails if a `*-run.sh` is not executable: pi-gen only logs a `Skip` line for
 it and the build succeeds without your changes.
+
+### Bootloader (Raspberry Pi 5 EEPROM)
+
+The bootloader lives in an EEPROM chip on each Pi, not in the image, so the
+build only writes the wanted settings to `/etc/genesis/bootloader.conf`;
+`genesis-eeprom.service` applies them on the first boot of a Pi 5 and the
+bootloader takes them at the next reboot. Defaults:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `EEPROM_BOOT_FIRST` | `auto` | The medium Genesis OS booted from is tried first; SD card, NVMe and USB all stay in `BOOT_ORDER` (SD boot `0xf461`, NVMe boot `0xf416`, USB boot `0xf614`). So an SD card, an NVMe SSD or a USB drive written with Genesis OS all boot, and the box keeps preferring the one it was set up on. `sd`, `nvme`, `usb` force one; `keep` leaves `BOOT_ORDER` alone. |
+| `EEPROM_PCIE_PROBE` | `1` | Finds NVMe drives on M.2 adapters that are not HAT+ too |
+| `EEPROM_NET_INSTALL_AT_POWER_ON` | `0` | No Raspberry Pi network-install screen at every power-on; still available by holding SHIFT and when nothing boots |
+| `EEPROM_POWER_OFF_ON_HALT` | `keep` | `1` draws about 0.01 W after shutdown (some HATs dislike it) |
+| `EEPROM_CUSTOMIZE` | `1` | `0`: the bootloader is left alone unless a boot medium is chosen later in Genesis Settings |
+
+How it changes the EEPROM, and what it leaves alone:
+
+* It edits the config the bootloader is running, only the keys above, and
+  never inside a conditional `[section]` you set yourself.
+* It writes no new bootloader version: the update is the packaged image of the
+  running version with only its config replaced, checked by reading it back,
+  and staged (never written at once) so it applies at the next reboot.
+* It runs once. The boot after, it records whether the bootloader took the
+  settings; after that it never runs again, so a change you make later with
+  `raspi-config` or `rpi-eeprom-config` stays.
+* Only a Raspberry Pi 5 (not a CM5 or Pi 500), never with secure boot,
+  `FREEZE_VERSION=1` in any section, or `RPI_EEPROM_IMMEDIATE_UPDATE=1` in
+  `/etc/default/rpi-eeprom-update`, never during the image build, and not
+  while the clock is behind the bootloader's last update (it would ignore
+  the update). A failure after `rpi-eeprom-update` ran takes the staged
+  update back. An update that `rpi-eeprom-update.service` removed before the
+  reboot (an `rpi-eeprom` upgrade restarts it) is staged once more at the next
+  boot, unless another update was applied after it (`rpi-eeprom-update -a`,
+  `rpi-eeprom-config --apply`, `raspi-config`; `genesis-eeprom cancel` also
+  stops the retry); one you take back yourself
+  (`rpi-eeprom-update -r`, `rpi-eeprom-config --apply`, `raspi-config`) stays
+  taken back.
+* Until the Pi that staged it reboots, the update waits on the boot medium:
+  reboot that Pi before moving the card or drive to another Raspberry Pi (a
+  Pi 5, Pi 500 or CM5 would take it at power-on). If it moves anyway, the next
+  Pi 5 records that it took the other Pi's update, and `genesis-eeprom status`
+  shows which Pi a recorded result belongs to.
+
+On the Pi: `sudo genesis-eeprom status`; `sudo genesis-eeprom first nvme`
+(or `sd`, `usb`, `auto`) to change the boot medium later, which Genesis
+Settings → System → Boot first from also does; `sudo genesis-eeprom cancel`
+takes back a staged update before the reboot. The config from before Genesis
+first changed it is kept in `/var/lib/genesis/eeprom/original.conf`, per Pi:
+`genesis-eeprom status` names this Pi's file (`original-SERIAL.conf` when the
+medium was set up on another Pi since; "none recorded" when this medium holds
+none for this Pi; "unknown" when this board took, or may have taken, another
+Pi's update first). The
+bootloader cannot show a custom logo (it has no setting for one); the Genesis
+splash starts with the OS.
 
 ### Boot firmware (`config.txt`, `cmdline.txt`)
 
@@ -249,7 +471,7 @@ Native build without Docker, on a Debian-based host with the packages from
 
 ```sh
 make lint    # shellcheck, yamllint, actionlint (if installed)
-make test    # dry-run of stage-custom against a fake root filesystem
+make test    # dry-run of stage-custom against a fake root filesystem, plus unit tests
 ```
 
 The dry-run executes every `*-run.sh` with pi-gen's variables set, captures
@@ -257,7 +479,12 @@ and syntax-checks the `on_chroot` scripts instead of running them, and
 asserts on the produced files in five scenarios (defaults, Wi-Fi with awkward
 characters, idempotence, invalid input, cloud-init disabled). It cannot tell
 you whether a package name exists in trixie or whether the image boots; the
-CI build and a real device do that.
+CI build and a real device do that. `make test` also runs
+`scripts/test-shell-logic.py` (I2C scan parsing, sensor debounce and
+notification texts, desktop label contrast), `scripts/test-eeprom.py` (the
+bootloader settings) and the Genesis Imager tests. The image build's smoke test
+also embeds the planned bootloader config into the image's packaged bootloader
+with its own `rpi-eeprom-config` and reads it back.
 
 ## Repository layout
 
@@ -277,16 +504,26 @@ stage-custom/
   05-hello-service/             example: ship a script + systemd unit
   06-apt-repos/                 Microsoft repository for VS Code (key vendored)
   07-desktop-packages/          settings-app runtime, wayvnc, plymouth, fonts
-  08-python/                    CPython 3.10 under /opt/python as "python", uv
+  08-python/                    your Pythons: 3.10 ("python") and 3.15 under /opt/python, uv, genesis-python
   09-vscode/                    VS Code, default settings, Python extensions
   10-branding/                  icons, Genesis icon theme, wallpapers, Plymouth splash, login screen
-  11-glass-theme/               GenesisGlass GTK theme, panel, desktop, terminal, labwc, Wayfire session
+  11-genesis-shell/             Genesis Shell (files/genesis-shell), labwc session config, GTK theme,
+                                install.sh (shared with CI) and preview.sh (headless smoke test)
   12-genesis-settings/          Genesis Settings app and its privileged helper
-  13-system-defaults/           interfaces, VNC, browser, autologin, session, splash flags
+  13-system-defaults/           interfaces, VNC, browser, autologin, default session, splash flags
+  14-first-boot/                genesis-firstboot.service and the setup-area placeholder on the boot partition
+  15-bootloader/                genesis-eeprom: Raspberry Pi 5 bootloader settings, applied once on the Pi
   90-services/                  enable/disable systemd units (runs last)
   secrets.env.example           template for secrets.env
 branding/src/                   the logo and wallpaper the assets are generated from
 scripts/make-assets.py          regenerates icons, splash and wallpapers (needs Pillow)
+scripts/make-sensor-icons.py    regenerates the sensor box icons A-K (SVG, standard library only)
+scripts/test-shell-logic.py     unit tests for Genesis Shell logic that needs no display
+scripts/test-eeprom.py          genesis-eeprom: boot order rules, config merge, and its state machine on a fake Pi 5
+scripts/image-smoke.sh          writes a built image through Genesis Imager, runs first boot and the
+                                headless desktop test inside it
+scripts/test-firstboot.sh       genesis-firstboot against a fake root (no root rights needed)
+imager/                         Genesis Imager (genesis_imager.py) and its tests
   secrets.env                   git-ignored, your secrets (local builds)
   build-info.env                git-ignored, generated per build
 .github/workflows/build-image.yml
@@ -294,6 +531,14 @@ scripts/make-assets.py          regenerates icons, splash and wallpapers (needs 
 
 ## Security notes
 
+* **The image carries no credentials** when the `FIRST_USER_PASS` and
+  `WIFI_*` secrets are unset (the default, and the right choice for this
+  public repository). Genesis Imager puts the password, as a salted SHA-512
+  crypt hash, and the Wi-Fi passphrase on each card while flashing; the first
+  boot applies them and overwrites them in place on the card, so they do not
+  stay on the boot partition. The plain password never leaves your computer.
+  On a Windows, macOS or Linux machine the imager stores your last settings
+  without either password.
 * Secrets never enter the repository. CI writes `stage-custom/secrets.env`
   from GitHub secrets at build time; locally you create it yourself. Neither
   file is copied into the image.
@@ -342,14 +587,61 @@ scripts/make-assets.py          regenerates icons, splash and wallpapers (needs 
   filesystem copies as soon as it has its own (`GENESIS_PRUNE_WORK`, on by
   default). Set it to `0` only when you debug an earlier stage with
   `CONTINUE=1`.
-* **Desktop shows no blur:** you are in the labwc session, or blur is off.
-  Genesis Settings → Appearance shows both; Super+B toggles blur in Glass.
-* **The build logs "wayfire is not installable":** the Raspberry Pi archive
-  dropped it. The image still builds with the labwc session as default; to
-  keep Glass, mirror Debian trixie's `wayfire` 0.9.0 packages in your own apt
-  repository and add it in `stage-custom/06-apt-repos`.
+* **Desktop is blank or the panel is missing:** look at
+  `~/.cache/genesis/session.log` (the shell logs there and is restarted
+  automatically if it crashes), then run
+  `/usr/share/genesis-shell/preview.sh /tmp/p` over SSH to reproduce headless.
+  The stock Raspberry Pi desktop is still available from the login screen's
+  session menu.
+* **A Pi 5 does not boot after a bootloader change:** hold SPACE at power-on
+  for the boot menu and pick another medium, or reset the bootloader from any
+  computer: Raspberry Pi Imager → Misc utility images → Bootloader → SD Card
+  Boot, write it to a spare SD card, boot the Pi from it and wait for the green
+  screen. That restores Raspberry Pi's factory settings (Genesis does not apply
+  its own again by itself). Genesis OS on an SD card, a USB drive or an NVMe
+  HAT+ then boots as before; an NVMe drive on an adapter that is not HAT+
+  needs `PCIE_PROBE=1` back: boot Genesis OS from an SD card, run
+  `sudo genesis-eeprom first nvme`, reboot, and remove the card.
+* **`genesis-eeprom status` says "deferred" or "failed":** another bootloader
+  update was pending, the clock was not set yet, or package rpi-eeprom has no
+  image of the bootloader version on the board (it is newer than the
+  package). Nothing was staged (a failure after staging takes the update back
+  and says so). `sudo genesis-eeprom apply --again` tries again, for example
+  after an `apt upgrade`.
+* **The sensor bar never appears although a box is plugged in:** run
+  `/usr/sbin/i2cdetect -y 1 0x10 0x3a` as your user (`/usr/sbin` is not on a
+  normal user's `PATH`). "No such file" means I2C is off
+  (Genesis Settings → Interfaces, then reboot); "Permission denied" means
+  your user is not in the `i2c` group (`sudo adduser $USER i2c`, log out and
+  in); an empty grid means the box does not answer (wiring, power, or an
+  address outside 0x10-0x3A). `genesis-shell-ctl state` shows what the shell
+  sees under `sensors`, including the last scan error.
+* **An app is missing from the dock or shows a generic icon:** its Wayland
+  `app_id` does not match a desktop file; add it to `APP_ID_ALIASES` in
+  `genesis_shell/services/apps.py`.
 * **`python` is 3.10 but a tool wants 3.13:** call `python3`, or run the tool
-  with `uv run --python 3.13`.
+  with `uv run --python 3.13`. `genesis-python` shows which interpreter is
+  which.
+* **`pip3.15 install` builds from source or fails:** the package has no wheel
+  for Python 3.15 on aarch64 yet. Use `python` (3.10), or
+  `uv python install 3.14` and a virtual environment on 3.14.
+* **The first boot asked for a user name anyway:** the card was not written by
+  Genesis Imager, or the settings were rejected. Read
+  `genesis-setup-result.txt` on the boot partition (any computer can open it).
+* **Genesis Imager says the image has no setup area:** the image was built
+  before Genesis Imager existed, or it is not a Genesis OS image. Build or
+  download a current one. If it says the image was *already customised*, you
+  picked a file made with `--output`: choose the original image to change the
+  settings, or write that file with any image writer.
+* **Genesis Imager says the image file is incomplete:** the `.img` is shorter
+  than its own partition table says (still being copied or unzipped, or an
+  interrupted download). Nothing was made bootable; copy it again.
+* **Genesis Imager lists no card:** check *Show fixed disks* (some USB card
+  readers report as fixed disks), then *Refresh*. Built-in SD slots on Macs are
+  listed as they are.
+* **The first boot kept the login prompt although I wanted autologin (or the
+  other way round):** the image's `DESKTOP_AUTOLOGIN` decides; Genesis Imager
+  keeps the build's choice for the renamed user.
 
 ## Alternatives
 

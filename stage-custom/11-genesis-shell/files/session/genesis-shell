@@ -1,0 +1,5 @@
+#!/bin/sh
+# Genesis Shell: panel, launcher, control center, notifications, wallpaper.
+export PYTHONPATH="/usr/lib/genesis-shell${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -m genesis_shell "$@"

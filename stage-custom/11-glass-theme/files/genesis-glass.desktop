@@ -1,6 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Genesis Glass
-Comment=Genesis OS desktop with blur and animations (Wayfire)
-Exec=/usr/bin/genesis-wayfire
-DesktopNames=wayfire;LXDE

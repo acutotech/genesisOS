@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Genesis
+Comment=Genesis OS desktop (labwc with Genesis Shell)
+Exec=/usr/bin/genesis-session
+TryExec=/usr/bin/genesis-session
+DesktopNames=Genesis;LXDE-pi
+X-LightDM-DesktopName=Genesis

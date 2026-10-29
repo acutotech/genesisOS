@@ -17,7 +17,7 @@ SPI=$(onoff "${ENABLE_SPI}")
 SERIAL_HW=$(onoff "${ENABLE_SERIAL_PORT}")
 SERIAL_CONS=$(onoff "${ENABLE_SERIAL_CONSOLE}")
 ONEWIRE=$(onoff "${ENABLE_ONEWIRE}")
-SESSION="$(cat "${ROOTFS_DIR}/etc/genesis/session" 2> /dev/null || echo labwc)"
+SESSION="$(cat "${ROOTFS_DIR}/etc/genesis/session" 2> /dev/null || echo rpd)"
 
 # --- Hardware interfaces: raspi-config edits config.txt, /etc/modules, cmdline.txt -----
 on_chroot << EOF
@@ -78,9 +78,9 @@ fi
 [ "\$(rc get_boot_cli)" = "1" ] || { echo "boot to desktop not applied"; exit 1; }
 ${AUTOLOGIN_CHECK} || { echo "desktop autologin setting (${BOOT_BEHAVIOUR}) not applied"; exit 1; }
 EOF
-	if [ "${SESSION}" = "wayfire" ]; then
+	if [ "${SESSION}" = "genesis" ] && [ -f "${ROOTFS_DIR}/usr/share/wayland-sessions/genesis.desktop" ]; then
 		on_chroot << EOF
-/usr/lib/genesis-settings/genesis-helper session wayfire
+/usr/lib/genesis-settings/genesis-helper session genesis
 EOF
 	fi
 else

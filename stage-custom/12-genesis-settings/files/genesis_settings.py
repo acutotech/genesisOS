@@ -6,9 +6,11 @@ Privileged changes go through /usr/lib/genesis-settings/genesis-helper via
 sudo (passwordless, or with the Raspberry Pi askpass prompt) or pkexec.
 """
 import configparser
+import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 
 import gi
@@ -18,8 +20,13 @@ from gi.repository import GdkPixbuf, GLib, Gtk, Pango  # noqa: E402
 
 HELPER = "/usr/lib/genesis-settings/genesis-helper"
 WALLPAPER_DIRS = ("/usr/share/genesis/wallpapers", "/usr/share/rpd-wallpaper")
-WAYFIRE_INI = os.path.expanduser("~/.config/wayfire.ini")
+SHELL_CONF_SYSTEM = "/etc/genesis/shell.conf"
+SHELL_CONF_USER = os.path.expanduser("~/.config/genesis/shell.conf")
+ACCENTS = [("Azure", "#4f8cff"), ("Violet", "#7c5cff"), ("Teal", "#2fb8a6"), ("Coral", "#ff7a59"), ("Amber", "#ffb347"), ("Mint", "#3ddc97")]
 RELEASE_FILE = "/etc/custom-image-release"
+GENESIS_EEPROM = "/usr/lib/genesis/genesis-eeprom"
+BOOT_FIRST = [("auto", "Automatic: the drive this system runs from"), ("sd", "SD card"), ("nvme", "NVMe SSD"),
+              ("usb", "USB drive"), ("keep", "Keep the current order")]
 
 CSS = b"""
 window.genesis { background-color: #0e1622; color: #dfe8f0; }
@@ -37,6 +44,8 @@ window.genesis { background-color: #0e1622; color: #dfe8f0; }
 .pill { border-radius: 999px; padding: 6px 16px; }
 .wallpaper { border-radius: 10px; border: 2px solid transparent; }
 .wallpaper-selected { border: 2px solid #8aa4bd; }
+.swatch { border-radius: 999px; min-width: 26px; min-height: 26px; padding: 0; border: 2px solid transparent; }
+.swatch-selected { border: 2px solid #ffffff; }
 """
 
 INTERFACES = [
@@ -317,7 +326,89 @@ class GenesisSettings(Gtk.Window):
         power_box.pack_start(reboot, False, False, 0)
         power_box.pack_start(shutdown, False, False, 0)
         power = card([Row("Power", "Restart or switch off the device", power_box)])
-        return page("System", identity, boot, power)
+        return page("System", identity, boot, self.build_bootloader(), power)
+
+    # ---- Raspberry Pi 5 bootloader (EEPROM) ------------------------------------------
+    def build_bootloader(self):
+        self.bl_version = Gtk.Label(label="…", xalign=1)
+        self.bl_order = Gtk.Label(label="…", xalign=1, wrap=True, max_width_chars=34)
+        self.bl_first = Gtk.ComboBoxText()
+        for key, text in BOOT_FIRST:
+            self.bl_first.append(key, text)
+        self.bl_first.set_active_id("auto")
+        self.bl_apply = Gtk.Button(label="Apply")
+        self.bl_apply.get_style_context().add_class("pill")
+        self.bl_apply.connect("clicked", self.on_bootloader_apply)
+        first_box = Gtk.Box(spacing=8)
+        first_box.pack_start(self.bl_first, False, False, 0)
+        first_box.pack_start(self.bl_apply, False, False, 0)
+        self.bl_state = Gtk.Label(label="", xalign=0, wrap=True)
+        self.bl_state.get_style_context().add_class("row-subtitle")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.pack_start(card([
+            Row("Bootloader", "Raspberry Pi 5 EEPROM version, and the drive this system started from", self.bl_version),
+            Row("Boot order", "Drives are tried in this order; SD card, NVMe and USB all stay bootable", self.bl_order),
+            Row("Boot first from", "Written to the EEPROM at the next reboot", first_box),
+        ]), False, False, 0)
+        box.pack_start(self.bl_state, False, False, 0)
+        self.refresh_bootloader()
+        return box
+
+    def refresh_bootloader(self):
+        def work():
+            result = sh([GENESIS_EEPROM, "status", "--json"], timeout=30)
+            try:
+                info = json.loads(result.stdout)
+            except ValueError:
+                info = {"available": False, "reason": (result.stderr or "genesis-eeprom is not installed").strip()}
+            GLib.idle_add(self.show_bootloader, info)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_bootloader(self, info):
+        if not info.get("available"):
+            self.bl_version.set_text("Not available")
+            self.bl_order.set_text("—")
+            self.bl_first.set_sensitive(False)
+            self.bl_apply.set_sensitive(False)
+            reason = info.get("reason", "unknown")
+            if reason == "not a Raspberry Pi 5":
+                text = "Bootloader settings are for a Raspberry Pi 5."
+            else:
+                text = "Bootloader settings are not available: %s." % reason
+            state = info.get("state") or {}
+            if state.get("status") == "moved":
+                text += "\nGenesis OS: " + state.get("reason", "")
+            self.bl_state.set_text(text)
+            return False
+        self.bl_version.set_text("%s · %s" % (info.get("version", "?"), info.get("booted_from", "?")))
+        self.bl_order.set_text(info.get("boot_order_text") or info.get("boot_order", "?"))
+        first = (info.get("settings") or {}).get("boot_first", "auto")
+        if first in dict(BOOT_FIRST):
+            self.bl_first.set_active_id(first)
+        state = info.get("state") or {}
+        text = state.get("reason", "")
+        if state.get("status") == "staged":
+            text = "An update is staged: reboot to apply it."
+        self.bl_state.set_text(("Genesis OS: " + text) if text else "")
+        return False
+
+    def on_bootloader_apply(self, _button):
+        choice = self.bl_first.get_active_id() or "auto"
+        self.bl_apply.set_sensitive(False)
+        run_root_async(["bootloader-first", choice], self.after_bootloader)
+
+    def after_bootloader(self, result):
+        self.bl_apply.set_sensitive(True)
+        lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0:
+            self.error("The bootloader was not changed", (result.stderr or result.stdout).strip())
+        elif any(line.startswith("genesis-eeprom: staged;") for line in lines):
+            self.show_banner("Bootloader update staged: it is written at the next reboot.")
+        else:
+            self.show_banner(lines[-1].replace("genesis-eeprom: ", "Bootloader: ") if lines else "Bootloader unchanged.")
+        self.refresh_bootloader()
+        return False
 
     def on_hostname_apply(self, _button):
         name = self.hostname_entry.get_text().strip()
@@ -343,8 +434,36 @@ class GenesisSettings(Gtk.Window):
         else:
             self.show_banner(success_text)
 
+    # ---- shell configuration helpers --------------------------------------------
+    @staticmethod
+    def shell_conf():
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read([SHELL_CONF_SYSTEM, SHELL_CONF_USER], encoding="utf-8")
+        return parser
+
+    def shell_conf_set(self, section, key, value):
+        """Write one key to the user shell.conf; Genesis Shell applies it live."""
+        parser = self.shell_conf()
+        if not parser.has_section(section):
+            parser.add_section(section)
+        parser.set(section, key, str(value))
+        try:
+            os.makedirs(os.path.dirname(SHELL_CONF_USER), exist_ok=True)
+            with open(SHELL_CONF_USER, "w", encoding="utf-8") as fh:
+                fh.write("# Genesis Shell settings (written by Genesis Settings).\n")
+                parser.write(fh)
+            return True
+        except OSError as exc:
+            self.error("Could not write %s" % SHELL_CONF_USER, str(exc))
+            return False
+
+    @staticmethod
+    def shell_ctl(*args):
+        return sh(["genesis-shell-ctl", *args], timeout=10).returncode == 0
+
     def build_appearance(self):
-        self.wall_flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.SINGLE, max_children_per_line=4,
+        conf = self.shell_conf()
+        self.wall_flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4,
                                      homogeneous=True, row_spacing=10, column_spacing=10)
         current = self.current_wallpaper()
         seen = set()
@@ -372,7 +491,7 @@ class GenesisSettings(Gtk.Window):
         browse = Gtk.Button(label="Browse…")
         browse.get_style_context().add_class("pill")
         browse.connect("clicked", self.on_wallpaper_browse)
-        greeter = Gtk.Button(label="Use current on login screen")
+        greeter = Gtk.Button(label="Use on login screen")
         greeter.get_style_context().add_class("pill")
         greeter.connect("clicked", self.on_greeter_wallpaper)
         wall_buttons = Gtk.Box(spacing=8)
@@ -385,40 +504,65 @@ class GenesisSettings(Gtk.Window):
         wallpapers.add(Gtk.ListBoxRow(activatable=False, child=wall_box))
 
         rows = []
-        session_now = helper_get("session")
-        glass_available = os.path.exists("/usr/share/wayland-sessions/genesis-glass.desktop")
-        self.session_glass = Gtk.RadioButton.new_with_label(None, "Genesis Glass (blur, animations)")
-        self.session_fast = Gtk.RadioButton.new_with_label_from_widget(self.session_glass, "Raspberry Pi labwc (lightest)")
-        (self.session_glass if session_now == "wayfire" else self.session_fast).set_active(True)
-        self.session_glass.set_sensitive(glass_available)
-        for radio in (self.session_glass, self.session_fast):
-            radio.connect("toggled", self.on_session_toggled)
-        radios = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        radios.pack_start(self.session_glass, False, False, 0)
-        radios.pack_start(self.session_fast, False, False, 0)
-        rows.append(Row("Desktop session", "Takes effect at the next login", radios))
-        if glass_available:
-            blur = Gtk.Switch(active=self.blur_enabled())
-            blur.connect("notify::active", self.on_blur_toggled)
-            rows.append(Row("Glass blur", "Blur behind the panel, menus and terminal (Glass session; Super+B toggles it live)", blur))
-        pipanel = Gtk.Button(label="Open")
-        pipanel.get_style_context().add_class("pill")
-        pipanel.connect("clicked", lambda _b: self.launch(["pipanel"]))
-        rows.append(Row("Raspberry Pi appearance settings", "Fonts, colours, panel size and more", pipanel))
+        accent_now = conf.get("appearance", "accent", fallback="#4f8cff").lower()
+        swatches = Gtk.Box(spacing=8)
+        self.swatch_buttons = []
+        for name, colour in ACCENTS:
+            btn = Gtk.Button(relief=Gtk.ReliefStyle.NONE, tooltip_text=name)
+            btn.get_style_context().add_class("swatch")
+            provider = Gtk.CssProvider()
+            provider.load_from_data(("button { background-color: %s; }" % colour).encode())
+            btn.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            btn.genesis_colour = colour
+            if colour == accent_now:
+                btn.get_style_context().add_class("swatch-selected")
+            btn.connect("clicked", self.on_accent_clicked)
+            swatches.pack_start(btn, False, False, 0)
+            self.swatch_buttons.append(btn)
+        rows.append(Row("Accent colour", "Used by the panel, launcher, controls and applications", swatches))
+
+        position_now = conf.get("panel", "position", fallback="top")
+        pos_top = Gtk.RadioButton.new_with_label(None, "Top")
+        pos_bottom = Gtk.RadioButton.new_with_label_from_widget(pos_top, "Bottom")
+        (pos_bottom if position_now == "bottom" else pos_top).set_active(True)
+        pos_top.connect("toggled", lambda r: r.get_active() and self.shell_conf_set("panel", "position", "top"))
+        pos_bottom.connect("toggled", lambda r: r.get_active() and self.shell_conf_set("panel", "position", "bottom"))
+        pos_box = Gtk.Box(spacing=12)
+        pos_box.pack_start(pos_top, False, False, 0)
+        pos_box.pack_start(pos_bottom, False, False, 0)
+        rows.append(Row("Panel position", "Where the floating panel lives", pos_box))
+
+        opacity = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 40, 95, 5)
+        opacity.set_draw_value(False)
+        opacity.set_size_request(180, -1)
+        opacity.set_value(float(conf.get("appearance", "glass_opacity", fallback="0.72")) * 100)
+        opacity.connect("value-changed", lambda sc: self.shell_conf_set("appearance", "glass_opacity", "%.2f" % (sc.get_value() / 100)))
+        rows.append(Row("Glass opacity", "How solid the panel and cards look over the wallpaper", opacity))
+
+        blank = Gtk.ComboBoxText()
+        choices = [("0", "Never"), ("300", "5 minutes"), ("600", "10 minutes"), ("1200", "20 minutes"), ("1800", "30 minutes")]
+        for value, text in choices:
+            blank.append(value, text)
+        blank.set_active_id(conf.get("idle", "blank_timeout", fallback="600"))
+        if blank.get_active_id() is None:
+            blank.set_active_id("600")
+        blank.connect("changed", self.on_blank_changed)
+        rows.append(Row("Blank screen after", "Turns the display off when idle", blank))
+
+        layout = Gtk.Button(label="Edit")
+        layout.get_style_context().add_class("pill")
+        layout.connect("clicked", lambda _b: self.launch(["xdg-open", SHELL_CONF_USER if os.path.exists(SHELL_CONF_USER) else SHELL_CONF_SYSTEM]))
+        rows.append(Row("Advanced", "Pinned apps, clock format and more in shell.conf", layout))
         return page("Appearance", wallpapers, card(rows))
 
-    @staticmethod
-    def current_wallpaper():
-        for profile in ("default", "LXDE-pi"):
-            conf = os.path.expanduser("~/.config/pcmanfm/%s/desktop-items-0.conf" % profile)
-            for line in read_text(conf).splitlines():
-                if line.startswith("wallpaper="):
-                    return os.path.realpath(line.split("=", 1)[1].strip())
-        return ""
+    def current_wallpaper(self):
+        path = self.shell_conf().get("wallpaper", "file", fallback="")
+        return os.path.realpath(path) if path else ""
 
     def set_wallpaper(self, path):
-        if shutil.which("pcmanfm"):
-            spawn(["pcmanfm", "--set-wallpaper=%s" % path, "--wallpaper-mode=crop"])
+        if not self.shell_ctl("wallpaper", path):
+            # shell not running (other session): store it for the next login
+            self.shell_conf_set("wallpaper", "file", path)
         for child in self.wall_flow.get_children():
             button = child.get_child()
             image = button.get_child()
@@ -451,52 +595,45 @@ class GenesisSettings(Gtk.Window):
             return
         run_root_async(["greeter-wallpaper", path], lambda r: self.after_change(r, "Login screen wallpaper updated."))
 
-    def on_session_toggled(self, radio):
-        if not radio.get_active():
+    def on_accent_clicked(self, button):
+        colour = button.genesis_colour
+        if not self.shell_conf_set("appearance", "accent", colour):
             return
-        name = "wayfire" if radio is self.session_glass else "labwc"
-        if helper_get("session") == name:
-            return
-        run_root_async(["session", name], lambda r: self.after_change(r, "Session changed; log out to switch."))
-
-    def wayfire_config(self):
-        parser = configparser.RawConfigParser(strict=False)
-        parser.optionxform = str
-        parser.read(WAYFIRE_INI)
-        return parser
-
-    def blur_enabled(self):
-        parser = self.wayfire_config()
-        plugins = parser.get("core", "plugins", fallback="")
-        return "blur" in plugins.split()
-
-    def on_blur_toggled(self, switch, _param):
-        parser = self.wayfire_config()
-        if not parser.has_section("core"):
-            parser.add_section("core")
-        plugins = parser.get("core", "plugins", fallback="").split()
-        if switch.get_active() and "blur" not in plugins:
-            plugins.append("blur")
-        if not switch.get_active() and "blur" in plugins:
-            plugins.remove("blur")
-        parser.set("core", "plugins", " ".join(plugins))
+        # applications pick the accent up from the user GTK stylesheet
+        css_dir = os.path.expanduser("~/.config/gtk-3.0")
         try:
-            os.makedirs(os.path.dirname(WAYFIRE_INI), exist_ok=True)
-            with open(WAYFIRE_INI, "w", encoding="utf-8") as fh:
-                parser.write(fh, space_around_delimiters=True)
+            os.makedirs(css_dir, exist_ok=True)
+            with open(os.path.join(css_dir, "gtk.css"), "w", encoding="utf-8") as fh:
+                fh.write("/* written by Genesis Settings */\n")
+                fh.write("@define-color genesis_accent %s;\n@define-color theme_selected_bg_color %s;\n@define-color accent_bg_color %s;\n@define-color accent_color %s;\n" % (colour, colour, colour, colour))
         except OSError as exc:
-            self.error("Could not write wayfire.ini", str(exc))
+            self.error("Could not write the GTK stylesheet", str(exc))
+        for btn in self.swatch_buttons:
+            ctx = btn.get_style_context()
+            if btn is button:
+                ctx.add_class("swatch-selected")
+            else:
+                ctx.remove_class("swatch-selected")
+        self.show_banner("Accent colour updated; newly opened applications use it too.")
+
+    def on_blank_changed(self, combo):
+        value = combo.get_active_id()
+        if value is None or not self.shell_conf_set("idle", "blank_timeout", value):
+            return
+        sh(["pkill", "-x", "swayidle"], timeout=5)
+        spawn(["genesis-idle"])
+        self.show_banner("Screen blanking updated.")
 
     def build_connectivity(self):
         wifi = Gtk.Button(label="Wi-Fi networks")
         wifi.get_style_context().add_class("pill")
-        wifi.connect("clicked", lambda _b: self.launch(["wfpanelctl", "netman", "menu"], ["lp-connection-editor"], ["nm-connection-editor"]))
+        wifi.connect("clicked", lambda _b: self.launch(["genesis-shell-ctl", "control-center"], ["lp-connection-editor"], ["nm-connection-editor"]))
         edit = Gtk.Button(label="Edit connections")
         edit.get_style_context().add_class("pill")
         edit.connect("clicked", lambda _b: self.launch(["lp-connection-editor"], ["nm-connection-editor"]))
         bt = Gtk.Button(label="Bluetooth")
         bt.get_style_context().add_class("pill")
-        bt.connect("clicked", lambda _b: self.launch(["wfpanelctl", "bluetooth", "menu"], ["blueman-manager"]))
+        bt.connect("clicked", lambda _b: self.launch(["genesis-shell-ctl", "control-center"], ["blueman-manager"]))
 
         self.country_combo = Gtk.ComboBoxText()
         current = sh(["raspi-config", "nonint", "get_wifi_country"]).stdout.strip()
@@ -537,7 +674,6 @@ class GenesisSettings(Gtk.Window):
         sound.connect("clicked", lambda _b: self.launch(["pavucontrol"]))
         return page("Display & Sound", card([
             Row("Displays", "Resolution, rotation and arrangement", screens),
-            Row("Screen blanking", "Turn the screen off after a period of inactivity", self.make_switch("blanking", False)),
             Row("Audio", "Output device, volume and input levels", sound),
         ]))
 
@@ -589,7 +725,7 @@ class GenesisSettings(Gtk.Window):
             Row("Storage", disk, None),
             Row("Python", "python %s (default), python3 %s (system)" % (self.python_version("python"), self.python_version("python3")), None),
             Row("Visual Studio Code", code_version, None),
-            Row("Session", helper_get("session") or "labwc", None),
+            Row("Session", helper_get("session") or "genesis", None),
             Row("Source", info.get("SOURCE_COMMIT", "unknown"), None),
         ]
         return page("About", card(rows))
@@ -598,6 +734,8 @@ class GenesisSettings(Gtk.Window):
 def main():
     win = GenesisSettings()
     win.connect("destroy", Gtk.main_quit)
+    if len(sys.argv) > 1 and win.stack.get_child_by_name(sys.argv[1]) is not None:
+        win.stack.set_visible_child_name(sys.argv[1])
     Gtk.main()
 
 

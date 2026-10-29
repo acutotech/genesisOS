@@ -50,9 +50,194 @@ jobs:
       - name: Dry-run the custom stage
         run: make test
 
+      - name: The bootloader drop-in under a real systemd
+        run: sudo GENESIS_CI=1 scripts/test-dropin-systemd.sh
+
+  shell-preview:
+    name: Genesis Shell headless preview
+    needs: lint
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    container:
+      image: debian:trixie
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the desktop stack (Raspberry Pi labwc when reachable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg
+          key=/usr/share/keyrings/raspberrypi-archive.gpg
+          if curl -fsSL --retry 3 https://archive.raspberrypi.com/debian/raspberrypi.gpg.key | gpg --dearmor -o "$key"; then
+            echo "deb [signed-by=$key] https://archive.raspberrypi.com/debian/ trixie main" \
+              > /etc/apt/sources.list.d/raspi.list
+            apt-get update -qq || rm -f /etc/apt/sources.list.d/raspi.list
+          fi
+          sed -e 's/#.*//' stage-custom/11-genesis-shell/00-packages \
+            | xargs apt-get install -y -qq --no-install-recommends
+          apt-get install -y -qq --no-install-recommends dbus dbus-bin dbus-daemon lxterminal \
+            fonts-inter fonts-jetbrains-mono fonts-dejavu-core gtk-update-icon-cache \
+            desktop-file-utils shared-mime-info at-spi2-core librsvg2-common xwayland
+          labwc --version
+          python3 -c 'import gi; gi.require_version("GtkLayerShell", "0.1"); from gi.repository import GtkLayerShell' \
+            && echo "gtk-layer-shell ok"
+
+      - name: Install Genesis Shell the way the image build does
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage-custom/11-genesis-shell/files/install.sh --root / --branding stage-custom/10-branding/files
+          /usr/share/genesis-shell/install.sh --postinstall
+          ls /usr/lib/genesis-shell/genesis_shell/protocols
+
+      - name: Run the desktop headless and take screenshots
+        shell: bash
+        env:
+          GENESIS_PREVIEW_PRINT_B64: "1"
+        run: /usr/share/genesis-shell/preview.sh "$PWD/preview"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-shell-preview
+          path: preview/
+          if-no-files-found: warn
+          retention-days: 14
+
+  imager-test:
+    name: Genesis Imager tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: "3.13"}
+          - {os: ubuntu-latest, python: "3.9"}
+          - {os: windows-latest, python: "3.13"}
+          - {os: macos-latest, python: "3.13"}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Unit tests
+        run: python -m unittest discover -s imager -v
+
+  imager-build:
+    name: Genesis Imager app (${{ matrix.name }})
+    needs: imager-test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, name: windows-x64}
+          - {os: macos-latest, name: macos-arm64}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Build with PyInstaller
+        shell: bash
+        env:
+          TARGET: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          # tzdata: Windows has no time zone database; bundled, the app can check zone names there too
+          python -m pip install --disable-pip-version-check -q pyinstaller==6.22.2 pillow==12.2.0 tzdata==2026.4
+          icons=stage-custom/10-branding/files/icons/hicolor
+          mkdir -p imager-build out
+          cp "$icons/64x64/apps/genesis-os.png" imager-build/genesis-os.png
+          # absolute paths for PyInstaller in the platform's own form: Git Bash's
+          # $PWD (/d/a/...) means D:\d\a\... to a Windows Python, pwd -W gives D:/a/...
+          root="$(pwd -W 2> /dev/null || pwd)"
+          sep=:
+          [ "${RUNNER_OS}" = Windows ] && sep=';'
+          common=(--noconfirm --clean --windowed --distpath imager-build/dist --workpath imager-build/work
+                  --specpath imager-build --icon "$root/$icons/256x256/apps/genesis-os.png"
+                  --add-data "$root/imager-build/genesis-os.png${sep}." --collect-data tzdata)
+          case "${RUNNER_OS}" in
+            Windows)
+              # --uac-admin: Windows asks for administrator rights when the app starts
+              python -m PyInstaller "${common[@]}" --onefile --uac-admin --name GenesisImager imager/genesis_imager.py
+              app=imager-build/dist/GenesisImager.exe
+              "$app" --write-placeholder out/placeholder.txt
+              cp "$app" "out/genesis-imager-${TARGET}.exe"
+              ;;
+            macOS)
+              python -m PyInstaller "${common[@]}" --name "Genesis Imager" \
+                --osx-bundle-identifier org.genesisos.imager imager/genesis_imager.py
+              "imager-build/dist/Genesis Imager.app/Contents/MacOS/Genesis Imager" --write-placeholder out/placeholder.txt
+              ditto -c -k --keepParent "imager-build/dist/Genesis Imager.app" "out/genesis-imager-${TARGET}.zip"
+              ;;
+          esac
+          # the app runs and produces the setup area the image carries
+          cmp out/placeholder.txt stage-custom/14-first-boot/files/genesis-setup.txt
+          rm out/placeholder.txt
+          ls -l out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-imager-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+
+  imager-build-linux:
+    name: Genesis Imager app (linux-x86_64)
+    needs: imager-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Built inside Ubuntu 22.04 so the app runs on glibc 2.35 and newer (Ubuntu 22.04,
+    # Debian 12 and later), whatever runner image hosts the job.
+    container:
+      image: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3 python3-venv python3-tk libpython3.10 binutils ca-certificates
+          python3 -m venv /opt/build
+          /opt/build/bin/pip install --disable-pip-version-check -q pyinstaller==6.22.2 pillow==12.2.0
+          icons=stage-custom/10-branding/files/icons/hicolor
+          mkdir -p imager-build out
+          cp "$icons/64x64/apps/genesis-os.png" imager-build/genesis-os.png
+          /opt/build/bin/python -m PyInstaller --noconfirm --clean --windowed --onefile --name genesis-imager \
+            --distpath imager-build/dist --workpath imager-build/work --specpath imager-build \
+            --icon "$PWD/$icons/256x256/apps/genesis-os.png" --add-data "$PWD/imager-build/genesis-os.png:." \
+            imager/genesis_imager.py
+          imager-build/dist/genesis-imager --write-placeholder out/placeholder.txt
+          cmp out/placeholder.txt stage-custom/14-first-boot/files/genesis-setup.txt
+          rm out/placeholder.txt
+          cp imager-build/dist/genesis-imager out/genesis-imager-linux-x86_64
+          ldd --version | sed -n 1p   # not head: ldd writes on after the first line, and SIGPIPE fails the step under pipefail
+          ls -l out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-imager-linux-x86_64
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
   build:
     name: Build image
-    needs: lint
+    needs: [lint, shell-preview, imager-test]
     # Full builds take a long time: only main, release tags and manual runs.
     if: >-
       github.event_name == 'workflow_dispatch'
@@ -224,7 +409,32 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Smoke-test the desktop inside the image
+        id: smoke
+        env:
+          IMAGE_PATH: ${{ steps.build.outputs.image-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=IMAGE_PATH scripts/image-smoke.sh "${IMAGE_PATH}" image-smoke
+          {
+            echo "### Desktop smoke test"
+            echo
+            echo "Result: \`$(cat image-smoke/result 2>/dev/null || echo unknown)\`"
+            echo "(0 = the Genesis session came up headless and every screenshot has content)"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload smoke-test screenshots
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: genesis-image-smoke
+          path: image-smoke/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload image
+        if: always() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.cfg.outputs.img_name }}
@@ -247,7 +457,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: build
+    needs: [build, imager-build, imager-build-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -259,9 +469,20 @@ jobs:
           name: ${{ needs.build.outputs.image-name }}
           path: deploy
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: genesis-imager-*
+          merge-multiple: true
+          path: imager
+
+      - name: Imager checksums
+        run: cd imager && sha256sum -- * > SHA256SUMS-imager && cat SHA256SUMS-imager
+
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # Everything pi-gen deployed, so SHA256SUMS matches the attached files.
-          files: deploy/*
+          files: |
+            deploy/*
+            imager/*
           fail_on_unmatched_files: true
           generate_release_notes: true

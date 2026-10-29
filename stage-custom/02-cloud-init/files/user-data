@@ -40,7 +40,7 @@
 ## Raspberry Pi specific module (cc_raspberry_pi). The flat form below is what
 ## the Raspberry Pi announcement documents for Trixie; newer upstream cloud-init
 ## nests the same keys under "interfaces:". The build-time switches in
-## stage-custom/custom.conf (ENABLE_I2C, ENABLE_SPI, ENABLE_UART) do not depend
+## stage-custom/custom.conf (ENABLE_I2C, ENABLE_SPI, ENABLE_SERIAL_PORT) do not depend
 ## on this module.
 # rpi:
 #   spi: true

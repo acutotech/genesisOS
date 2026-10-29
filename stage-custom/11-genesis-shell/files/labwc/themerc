@@ -1,0 +1,65 @@
+# GenesisGlass theme for labwc: dark, rounded, steel-blue accent.
+# Installed by install.sh as /usr/share/themes/GenesisGlass/{labwc,openbox-3}/themerc with #4f8cff replaced by the accent.
+
+border.width: 1
+window.titlebar.padding.height: 7
+window.titlebar.padding.width: 8
+
+window.active.border.color: #3a4a66
+window.inactive.border.color: #1c2636
+window.active.title.bg.color: #121a26
+window.inactive.title.bg.color: #0f1521
+window.active.label.text.color: #e9eff6
+window.inactive.label.text.color: #7f8da0
+window.label.text.justify: center
+
+window.button.width: 24
+window.button.height: 24
+window.button.spacing: 4
+window.button.hover.bg.corner-radius: 8
+window.active.button.unpressed.image.color: #e9eff6
+window.inactive.button.unpressed.image.color: #7f8da0
+
+window.active.shadow.size: 48
+window.inactive.shadow.size: 28
+window.active.shadow.color: #00000070
+window.inactive.shadow.color: #00000040
+
+menu.border.width: 1
+menu.border.color: #2a3a4f
+menu.items.bg.color: #0f1826
+menu.items.text.color: #e9eff6
+menu.items.active.bg.color: #4f8cff
+menu.items.active.text.color: #ffffff
+menu.items.padding.x: 14
+menu.items.padding.y: 7
+menu.separator.color: #2a3a4f
+menu.separator.padding.width: 8
+menu.separator.padding.height: 4
+menu.title.bg.color: #121c2b
+menu.title.text.color: #e9eff6
+menu.width.min: 200
+menu.width.max: 340
+
+osd.bg.color: #0f1826f0
+osd.border.color: #2a3a4f
+osd.border.width: 1
+osd.label.text.color: #e9eff6
+osd.window-switcher.width: 640
+osd.window-switcher.padding: 8
+osd.window-switcher.item.padding.x: 12
+osd.window-switcher.item.padding.y: 5
+osd.window-switcher.item.active.border.width: 2
+osd.window-switcher.item.icon.size: 24
+osd.window-switcher.preview.border.width: 1
+osd.window-switcher.preview.border.color: #4f8cff
+osd.workspace-switcher.boxes.width: 24
+osd.workspace-switcher.boxes.height: 24
+osd.workspace-switcher.boxes.border.width: 2
+
+snapping.overlay.region.bg.color: #4f8cff40
+snapping.overlay.edge.bg.color: #4f8cff40
+snapping.overlay.region.border.width: 1
+snapping.overlay.edge.border.width: 1
+snapping.overlay.region.border.color: #4f8cff
+snapping.overlay.edge.border.color: #4f8cff

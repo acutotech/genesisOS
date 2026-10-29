@@ -1,0 +1,2 @@
+# Run by labwc when the Genesis session starts (sh syntax).
+/usr/bin/genesis-session-start &

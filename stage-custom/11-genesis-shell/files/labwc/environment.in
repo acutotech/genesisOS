@@ -1,0 +1,8 @@
+# Environment for the Genesis labwc session (read by labwc, inherited by apps).
+# Keyboard layout is exported by genesis-session from /etc/default/keyboard.
+XDG_CURRENT_DESKTOP=Genesis:LXDE-pi
+QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+XCURSOR_THEME=@CURSOR_THEME@
+XCURSOR_SIZE=24
+LABWC_FALLBACK_OUTPUT=NOOP-1
+@XWAYLAND_LINE@

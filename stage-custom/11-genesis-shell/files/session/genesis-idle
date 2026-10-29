@@ -1,0 +1,35 @@
+#!/usr/bin/python3
+"""Screen blanking and optional locking on idle, from shell.conf ([idle])."""
+
+import configparser
+import os
+import shutil
+import sys
+
+
+def main():
+    conf = configparser.ConfigParser(interpolation=None)
+    conf.read_dict({"idle": {"blank_timeout": "600", "lock_on_idle": "false"}})
+    conf.read(["/etc/genesis/shell.conf", os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "genesis", "shell.conf")], encoding="utf-8")
+    try:
+        blank = max(0, conf.getint("idle", "blank_timeout"))
+    except ValueError:
+        blank = 600
+    lock = conf.getboolean("idle", "lock_on_idle", fallback=False)
+    if blank == 0 and not lock:
+        return 0
+    if shutil.which("swayidle") is None:
+        print("genesis-idle: swayidle not installed", file=sys.stderr)
+        return 0
+    argv = ["swayidle", "-w"]
+    if blank > 0 and shutil.which("wlopm"):
+        argv += ["timeout", str(blank), "wlopm --off '*'", "resume", "wlopm --on '*'"]
+    if lock and shutil.which("swaylock"):
+        argv += ["timeout", str(max(60, blank - 30 if blank else 600)), "genesis-shell-ctl lock", "before-sleep", "genesis-shell-ctl lock"]
+    if len(argv) == 2:
+        return 0
+    os.execvp(argv[0], argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

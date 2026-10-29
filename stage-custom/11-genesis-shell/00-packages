@@ -1,0 +1,35 @@
+# Genesis Shell runtime: GTK 3 + layer-shell from Python, system bindings
+python3-gi
+python3-gi-cairo
+python3-cairo
+gir1.2-gtk-3.0
+gir1.2-gtklayershell-0.1
+gir1.2-nm-1.0
+gir1.2-upowerglib-1.0
+python3-pulsectl
+python3-pywayland
+python3-cffi-backend
+python3-pil
+# sensor bar: i2cdetect for the I2C scan, librsvg so GdkPixbuf loads the SVG icons
+i2c-tools
+librsvg2-common
+libwayland-dev
+pkg-config
+libglib2.0-bin
+dbus-user-session
+# compositor and Wayland utilities used by the session
+labwc
+kanshi
+swayidle
+swaylock
+wlr-randr
+wlopm
+grim
+slurp
+wl-clipboard
+xdg-desktop-portal
+xdg-desktop-portal-wlr
+xdg-desktop-portal-gtk
+# look
+papirus-icon-theme
+adwaita-icon-theme

@@ -1,8 +1,0 @@
-#!/bin/sh
-# Run the XDG autostart entries for the Genesis Glass session.
-if command -v lxsession-xdg-autostart > /dev/null 2>&1; then
-	exec lxsession-xdg-autostart
-elif command -v dex > /dev/null 2>&1; then
-	exec dex -a -e LXDE
-fi
-exit 0

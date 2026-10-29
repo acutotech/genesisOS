@@ -1,0 +1,19 @@
+[Unit]
+Description=Genesis OS bootloader settings (Raspberry Pi 5 EEPROM, applied once)
+Documentation=file:///usr/share/doc/genesis/bootloader.txt
+# rpi-eeprom-update.service removes staged updates at every boot: run after it, so
+# what this stages survives until the next reboot applies it
+After=rpi-eeprom-update.service boot-firmware.mount local-fs.target genesis-firstboot.service
+RequiresMountsFor=/boot/firmware
+ConditionPathExists=/proc/device-tree/chosen/bootloader/boot-mode
+ConditionPathExists=!/var/lib/genesis/eeprom/done
+ConditionVirtualization=!container
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/genesis/genesis-eeprom apply
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

@@ -37,13 +37,9 @@ PI_GEN_REF="${PI_GEN_REF:-arm64}"
 CONTINUE="${CONTINUE:-0}"
 NATIVE=0
 
-# Knobs of stage-custom/custom.conf that may be overridden from the environment.
-FORWARDED_VARS=(
-	WIFI_SSID WIFI_PASSWORD WIFI_HIDDEN WIFI_INTERFACE
-	ENABLE_I2C ENABLE_SPI ENABLE_UART CONFIG_TXT_EXTRA
-	PERSISTENT_JOURNAL JOURNAL_MAX_USE ENABLE_UNATTENDED_UPGRADES
-	ENABLE_SERVICES DISABLE_SERVICES
-)
+# Every knob of stage-custom/custom.conf (the VAR="${VAR:-default}" lines) may be
+# overridden from the environment; the list is derived so it cannot go stale.
+mapfile -t FORWARDED_VARS < <(sed -nE 's/^([A-Z_]+)="\$\{\1:-.*/\1/p' "${STAGE_DIR}/custom.conf")
 
 usage() {
 	sed -n '2,/^set -euo pipefail/{/^set -euo pipefail/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"

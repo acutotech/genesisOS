@@ -1,0 +1,79 @@
+#!/usr/bin/python3
+"""Run the XDG autostart entries that apply to the Genesis desktop.
+
+Honours OnlyShowIn/NotShowIn (desktop name "Genesis"), Hidden, TryExec and the
+user's ~/.config/autostart overrides, like a desktop-environment session manager.
+"""
+
+import os
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+DESKTOP = "Genesis"
+
+
+def autostart_dirs():
+    user = os.path.join(GLib.get_user_config_dir(), "autostart")
+    system = [os.path.join(d, "autostart") for d in GLib.get_system_config_dirs()]
+    if "/etc/xdg/autostart" not in system:
+        system.append("/etc/xdg/autostart")
+    return [user] + system
+
+
+def entries():
+    seen = {}
+    for directory in autostart_dirs():
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".desktop") or name in seen:
+                continue
+            seen[name] = os.path.join(directory, name)
+    return seen
+
+
+def main():
+    launched = 0
+    for name, path in entries().items():
+        keyfile = GLib.KeyFile()
+        try:
+            keyfile.load_from_file(path, GLib.KeyFileFlags.NONE)
+        except GLib.Error as exc:
+            print(f"autostart: skipping {name}: {exc}", file=sys.stderr)
+            continue
+        group = "Desktop Entry"
+        try:
+            if keyfile.get_boolean(group, "Hidden"):
+                continue
+        except GLib.Error:
+            pass
+        try:
+            if not keyfile.get_boolean(group, "X-GNOME-Autostart-enabled"):
+                continue
+        except GLib.Error:
+            pass
+        try:
+            info = Gio.DesktopAppInfo.new_from_keyfile(keyfile)
+        except (TypeError, GLib.Error):  # PyGObject raises for a NULL constructor result
+            info = None
+        if info is None:  # TryExec missing, invalid Exec
+            continue
+        if not info.get_show_in(DESKTOP):
+            continue
+        try:
+            info.launch([], None)
+            launched += 1
+        except GLib.Error as exc:
+            print(f"autostart: cannot launch {name}: {exc}", file=sys.stderr)
+    print(f"autostart: launched {launched} entr{'y' if launched == 1 else 'ies'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

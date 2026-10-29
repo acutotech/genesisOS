@@ -6,9 +6,9 @@
 source "${STAGE_DIR}/lib.sh"
 
 on_chroot << EOF
-for pkg in fonts-inter fonts-jetbrains-mono; do
+for pkg in fonts-inter fonts-jetbrains-mono blueman; do
 	if ! apt-get -o Acquire::Retries=3 install -y "\$pkg"; then
-		echo "WARNING: optional package \$pkg is not installable; the theme falls back to the default fonts"
+		echo "WARNING: optional package \$pkg is not installable; continuing without it"
 	fi
 done
 EOF
