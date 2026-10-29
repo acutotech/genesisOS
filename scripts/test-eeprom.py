@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -313,7 +314,7 @@ class Program(unittest.TestCase):
         self.write(os.path.join(self.root, "fake", "running.conf"), text)
 
     def run_tool(self, *args, rc=0, **env):
-        result = subprocess.run([sys.executable, "-I", TOOL, *args], capture_output=True, text=True,
+        result = subprocess.run([sys.executable, "-I", TOOL, *args], capture_output=True, text=True, timeout=60,
                                 env={**os.environ, "GENESIS_EEPROM_ROOT": self.root, "GENESIS_EEPROM_TOOLS": self.tools, **env})
         self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
         return result.stdout + result.stderr
@@ -573,7 +574,7 @@ class Program(unittest.TestCase):
         self.service()
         self.assertEqual(self.state()["status"], "removed")
         self.reboot(FACTORY)
-        self.dt("update-timestamp", 1700000500)                  # the user's rpi-eeprom-config --apply, same version
+        self.dt("update-timestamp", int(time.time()) + 100)      # the user's rpi-eeprom-config --apply, stamped later
         self.run_tool("apply")
         st = self.state()
         self.assertEqual(st["status"], "not-applied")
@@ -732,6 +733,99 @@ class Program(unittest.TestCase):
         self.reboot("[all]\nBOOT_ORDER=0xf41\n", boot="boot-3")
         self.run_tool("apply")
         self.assertEqual((self.state()["status"], self.state()["moved_from"]), ("staged", "a1b2c3d4"))
+
+    def test_an_own_go_back_on_a_newer_bootloader_stands(self):          # R1
+        self.run_tool("apply")
+        self.service()                                           # the upgrade added a newer default image
+        self.reboot(FACTORY)
+        self.dt("build-timestamp", 1792764809)                   # the go-back was built from it (rpi-eeprom-update -l)
+        self.dt("update-timestamp", int(time.time()) + 100)
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "not-applied")
+        self.assertEqual(self.calls().count("-d -f"), 1)
+
+    def test_the_services_own_write_before_the_removal_is_not_a_go_back(self):
+        self.run_tool("apply")
+        self.service()
+        removed_at = self.state()["removed_at"]
+        self.reboot(FACTORY)
+        self.dt("update-timestamp", removed_at - 5)              # stamped by the service before `watch after`
+        self.assertIn("staging it again", self.run_tool("apply"))
+
+    def test_a_choice_made_while_the_service_runs_with_nothing_staged_is_watched(self):   # R2
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.run_tool("apply")                                   # applied, done
+        self.run_tool("watch", "before")                         # an upgrade restarts the service: nothing staged
+        self.run_tool("first", "usb")
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root})
+        self.run_tool("watch", "after")
+        self.assertEqual(self.state()["status"], "removed")
+
+    def test_only_root_can_take_the_lock(self):                   # R4-INT-1
+        self.run_tool("apply")
+        self.assertEqual(os.stat(os.path.join(self.root, "run", "genesis-eeprom.lock")).st_mode & 0o777, 0o600)
+
+    def test_watch_after_never_waits_for_the_lock_when_it_has_nothing_to_do(self):
+        import fcntl
+        self.run_tool("apply")
+        lock = os.path.join(self.root, "run", "genesis-eeprom.lock")
+        with open(lock, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)                       # someone holds it for good
+            started = time.monotonic()
+            self.run_tool("watch", "after")                      # a stop or shutdown: no marker
+            self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_move_record_stays_with_the_pi_that_recorded_it(self):     # R3
+        self.run_tool("apply")
+        a_desired = self.staged_conf()
+        self.serial("bbbb0000")
+        self.reboot(a_desired)                                   # B takes A's update
+        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "immediate 1\n")
+        self.run_tool("apply")
+        self.assertEqual((self.state()["status"], self.state()["moved_from"]), ("deferred", "a1b2c3d4"))
+        self.serial("a1b2c3d4")                                  # back to A before B rebooted
+        self.reboot(FACTORY, boot="boot-3")
+        self.run_tool("apply")
+        st = self.state()
+        self.assertEqual(st["status"], "staged")
+        self.assertNotIn("moved_from", st)
+        self.assertNotIn("took an update", st["reason"])
+
+    def test_every_result_names_its_pi(self):                     # XB3
+        self.running(FACTORY + "FREEZE_VERSION=1\n")
+        self.run_tool("apply")
+        self.assertEqual((self.state()["status"], self.state()["serial"]), ("skipped", "a1b2c3d4"))
+        self.serial("bbbb0000")
+        self.assertEqual(self.status_state()["status"], "other-pi")
+        self.run_tool("cancel")
+        self.assertEqual(self.state()["serial"], "bbbb0000")
+
+    def test_status_names_this_pis_original(self):                # docs: comes back only when Genesis runs again
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.run_tool("apply")
+        self.serial("bbbb0000")
+        self.reboot("[all]\nBOOT_ORDER=0xf41\n", boot="boot-3")
+        self.run_tool("first", "usb")
+        self.reboot(self.staged_conf(), boot="boot-4")
+        self.run_tool("apply")                                   # B applied and done
+        self.serial("a1b2c3d4")                                  # back on A: nothing runs
+        info = json.loads(self.run_tool("status", "--json"))
+        self.assertEqual(info["original"], self.eeprom_file("original-a1b2c3d4.conf"))
+        self.assertEqual(info["state"]["notes"], [])
+        self.assertIn("Config before Genesis OS " + self.eeprom_file("original-a1b2c3d4.conf"), self.run_tool("status"))
+
+    def test_another_pis_result_on_a_pi500_promises_nothing(self):   # R4
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.run_tool("apply")
+        self.serial("c5c5c5c5")
+        self.write(os.path.join(self.root, "proc", "device-tree", "system", "linux,revision"), be32(0xD04190), binary=True)
+        st = self.status_state()
+        self.assertEqual(st["status"], "other-pi")
+        self.assertIn("changes nothing on this board", st["reason"])
 
     def test_watch_without_a_staged_update_does_nothing(self):
         self.service()

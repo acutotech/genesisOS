@@ -27,14 +27,15 @@ your own applied before that reboot also stands.
 The boot order keeps SD card, NVMe and USB in it, so any of them boots.
 "auto" puts the medium Genesis OS booted from first.
 
-The config the bootloader had before Genesis first changed it is in
-/var/lib/genesis/eeprom/original.conf; original.serial next to it names the
-Pi it belongs to (compare the Serial line of "genesis-eeprom status"). Another
-Pi's is kept as original-SERIAL.conf and comes back when the card or drive
-returns to that Pi; a Pi listed in original.unknown took another Pi's update
-before Genesis saw its own config. To go back to it:
+The config the bootloader had before Genesis first changed it is kept in
+/var/lib/genesis/eeprom: "genesis-eeprom status" names this Pi's file on its
+"Config before Genesis OS" line. That is original.conf (original.serial names
+its Pi), or original-SERIAL.conf when the card or drive was set up on another
+Pi since (it becomes original.conf again the next time Genesis OS changes this
+Pi's bootloader), or "unknown" when this Pi took another Pi's update before
+Genesis saw its own config. To go back to it:
 
-  sudo rpi-eeprom-config --apply /var/lib/genesis/eeprom/original.conf
+  sudo rpi-eeprom-config --apply FILE     (the file status names)
 
 If a Pi 5 no longer boots at all, its bootloader can be reset from any
 computer: in Raspberry Pi Imager choose Misc utility images > Bootloader >

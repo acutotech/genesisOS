@@ -401,11 +401,11 @@ On the Pi: `sudo genesis-eeprom status`; `sudo genesis-eeprom first nvme`
 (or `sd`, `usb`, `auto`) to change the boot medium later, which Genesis
 Settings → System → Boot first from also does; `sudo genesis-eeprom cancel`
 takes back a staged update before the reboot. The config from before Genesis
-first changed it is kept in `/var/lib/genesis/eeprom/original.conf` (`original.serial`
-names the Pi it belongs to; another Pi's is kept as `original-SERIAL.conf` and
-comes back when the medium returns to that Pi; `original.unknown` lists Pis
-whose own config was never seen). The bootloader cannot show a custom logo
-(it has no setting for one); the Genesis splash starts with the OS.
+first changed it is kept in `/var/lib/genesis/eeprom/original.conf`, per Pi:
+`genesis-eeprom status` names this Pi's file (`original-SERIAL.conf` when the
+medium was set up on another Pi since, or unknown when this Pi took another
+Pi's update first). The bootloader cannot show a custom logo (it has no
+setting for one); the Genesis splash starts with the OS.
 
 ### Boot firmware (`config.txt`, `cmdline.txt`)
 
