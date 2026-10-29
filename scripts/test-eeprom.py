@@ -217,7 +217,8 @@ bootfs = os.path.join(root, "boot", "firmware")
 pending = os.path.join(root, "run", "rpi-eeprom-update-pending")
 args = sys.argv[1:]
 if args == ["-b"]:
-    print(bootfs)
+    # a NOOBS-labelled SD card is mounted on a temporary directory that is gone when -b returns
+    print(os.path.join(root, "gone-mount") if os.environ.get("STUB_BOOTFS_GONE") else bootfs)
 elif args[:2] == ["-d", "-f"]:
     if os.environ.get("RPI_EEPROM_IMMEDIATE_UPDATE") != "0":
         sys.exit(9)   # an immediate write is never what genesis-eeprom may ask for
@@ -227,6 +228,9 @@ elif args[:2] == ["-d", "-f"]:
     upd = os.path.join(bootfs, "pieeprom.upd")
     shutil.copyfile(args[2], upd)
     shutil.copyfile(args[2] + ".conf", upd + ".conf")
+    with open(upd, "r+b") as fh:                 # every image written is stamped: no two are the same
+        fh.seek(-32, 2)
+        fh.write(("%032d" % time.time_ns()).encode())
     if os.environ.get("STUB_STAGE_OTHER"):
         with open(upd + ".conf", "w") as fh:
             fh.write("[all]\nBOOT_ORDER=0xf21\n")
@@ -348,6 +352,16 @@ class Program(unittest.TestCase):
 
     def status_state(self):
         return json.loads(self.run_tool("status", "--json"))["state"]
+
+    def serial(self, value):
+        self.write(os.path.join(self.root, "proc", "device-tree", "serial-number"), value.encode() + b"\x00", binary=True)
+
+    def dt(self, name, value):
+        self.write(os.path.join(self.root, "proc", "device-tree", "chosen", "bootloader", name), be32(value), binary=True)
+
+    def read(self, name):
+        with open(self.eeprom_file(name)) as fh:
+            return fh.read()
 
     def reboot(self, running, boot="boot-2"):
         for name in ("pieeprom.upd", "pieeprom.upd.conf", "pieeprom.sig"):   # what rpi-eeprom-update.service cleans
@@ -507,7 +521,7 @@ class Program(unittest.TestCase):
         out = self.run_tool("apply")
         self.assertIn("staging it again", out)
         self.assertEqual((self.state()["status"], self.state()["attempts"]), ("staged", 2))
-        self.service(boot="boot-2")
+        self.service()
         self.reboot(FACTORY, boot="boot-3")                      # and again: give up
         self.run_tool("apply")
         self.assertEqual(self.state()["status"], "failed")
@@ -553,6 +567,171 @@ class Program(unittest.TestCase):
         with open(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "rb") as fh:
             self.assertEqual(fh.read(), b"newer bootloader")
         self.assertEqual(self.calls().count(" -r "), 0)
+
+    def test_an_own_update_applied_after_the_removal_stands(self):     # SM1/XB6
+        self.run_tool("apply")
+        self.service()
+        self.assertEqual(self.state()["status"], "removed")
+        self.reboot(FACTORY)
+        self.dt("update-timestamp", 1700000500)                  # the user's rpi-eeprom-config --apply, same version
+        self.run_tool("apply")
+        st = self.state()
+        self.assertEqual(st["status"], "not-applied")
+        self.assertIn("it stands", st["reason"])
+        self.assertTrue(self.done())
+        self.assertEqual(self.calls().count("-d -f"), 1)
+
+    def test_a_newer_bootloader_from_the_upgrade_still_gets_the_settings(self):
+        self.run_tool("apply")
+        self.service()
+        self.reboot(FACTORY)
+        self.dt("build-timestamp", 1792764809)                   # the upgrade flashed a newer bootloader
+        self.dt("update-timestamp", 1792764900)
+        self.assertIn("staging it again", self.run_tool("apply"))
+        st = self.state()
+        self.assertEqual((st["status"], st["image"]), ("staged", "pieeprom-2026-10-23.bin"))
+
+    def test_cancel_leaves_another_update_alone(self):            # SM2
+        self.run_tool("apply")
+        self.service(STUB_AUTO_NEW="1")                          # the upgrade staged a newer bootloader
+        self.assertIn("left alone", self.run_tool("cancel"))
+        with open(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "rb") as fh:
+            self.assertEqual(fh.read(), b"newer bootloader")
+        self.assertEqual((self.state()["status"], self.done()), ("cancelled", True))
+        self.reboot(FACTORY)
+        self.assertIn("nothing to do", self.run_tool("apply"))  # the retry is stopped too
+
+    def test_a_choice_made_while_the_service_runs_is_watched(self):   # SM3
+        self.run_tool("apply")
+        self.run_tool("watch", "before")
+        self.run_tool("first", "usb")                            # Settings, while the upgrade runs the service
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root})
+        self.run_tool("watch", "after")
+        st = self.state()
+        self.assertEqual(st["status"], "removed")                # the USB choice is staged again next boot
+        self.reboot(FACTORY)
+        self.run_tool("apply")
+        self.assertIn("BOOT_ORDER=0xf614", self.staged_conf())
+
+    def test_apply_after_a_take_back_says_so(self):              # SM4
+        self.run_tool("apply")
+        self.user_update("-r")
+        out = self.run_tool("apply")
+        self.assertIn("no longer on the boot partition", out)
+        self.assertNotIn("applied at the next reboot", out)
+
+    def test_watch_after_runs_once(self):                        # SM5: ExecStopPost after ExecStartPost
+        self.run_tool("apply")
+        self.service()
+        before = self.state()
+        self.run_tool("watch", "after")                          # the stop at shutdown
+        self.assertEqual(self.state()["reason"], before["reason"])
+
+    def test_a_failed_service_run_is_still_seen(self):           # SM5: only ExecStopPost runs
+        self.run_tool("apply")
+        self.run_tool("watch", "before")
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root})
+        self.run_tool("watch", "after")                          # as ExecStopPost
+        self.assertEqual(self.state()["status"], "removed")
+
+    def test_a_pending_flag_on_a_boot_partition_that_is_gone_defers(self):   # INT-2
+        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "recovery 1\n")
+        self.run_tool("apply", STUB_BOOTFS_GONE="1")
+        self.assertEqual(self.state()["status"], "deferred")
+        self.assertNotIn("-d -f", self.calls())
+
+    def test_each_pi_keeps_its_own_original_across_moves(self):  # XB1
+        self.run_tool("apply")                                   # Pi A: factory config, NVMe first
+        a_genesis = self.staged_conf()
+        self.reboot(a_genesis)
+        self.run_tool("apply")
+        b_own = "[all]\nBOOT_UART=1\nBOOT_ORDER=0xf41\n"
+        self.serial("bbbb0000")                                  # to Pi B
+        self.reboot(b_own, boot="boot-3")
+        self.run_tool("first", "usb")
+        self.assertEqual((self.read("original.conf"), self.read("original.serial").strip()), (b_own, "bbbb0000"))
+        self.assertEqual(self.read("original-a1b2c3d4.conf"), FACTORY)
+        self.serial("a1b2c3d4")                                  # back to A, which runs Genesis's config
+        self.reboot(a_genesis, boot="boot-4")
+        self.run_tool("first", "sd")
+        self.assertEqual((self.read("original.conf"), self.read("original.serial").strip()), (FACTORY, "a1b2c3d4"))
+        self.assertEqual(self.read("original-bbbb0000.conf"), b_own)
+        self.serial("bbbb0000")                                  # and to B again
+        self.reboot(b_own, boot="boot-5")
+        self.run_tool("first", "nvme")
+        self.assertEqual(self.read("original.conf"), b_own)
+        self.assertEqual(self.read("original-a1b2c3d4.conf"), FACTORY)
+
+    def test_a_pi_that_took_another_ones_update_keeps_its_known_original(self):   # XB1/S6
+        b_own = "[all]\nBOOT_UART=1\nBOOT_ORDER=0xf41\n"
+        self.serial("bbbb0000")
+        self.running(b_own)
+        self.run_tool("apply")                                   # B first: its original is known
+        self.reboot(self.staged_conf())
+        self.run_tool("apply")
+        self.serial("a1b2c3d4")                                  # A stages, then the medium goes to B unrebooted
+        self.reboot(FACTORY, boot="boot-3")
+        self.run_tool("first", "nvme")
+        a_desired = self.staged_conf()
+        self.serial("bbbb0000")
+        self.reboot(a_desired, boot="boot-4")
+        self.run_tool("apply")
+        self.assertEqual(self.read("original.conf"), b_own)
+        self.assertFalse(os.path.exists(self.eeprom_file("original.unknown")))
+        self.assertTrue(any("took an update staged on Raspberry Pi a1b2c3d4" in n for n in self.state()["notes"]))
+
+    def test_moved_to_a_pi500_sets_the_pi5s_original_aside(self):    # XB2
+        self.run_tool("apply")
+        self.reboot(FACTORY)
+        self.serial("c5c5c5c5")
+        self.write(os.path.join(self.root, "proc", "device-tree", "system", "linux,revision"), be32(0xD04190), binary=True)
+        self.run_tool("apply")
+        self.assertFalse(os.path.exists(self.eeprom_file("original.conf")))
+        self.assertEqual(self.read("original-a1b2c3d4.conf"), FACTORY)
+        info = json.loads(self.run_tool("status", "--json"))
+        self.assertEqual((info["available"], info["serial"], info["state"]["status"]), (False, "c5c5c5c5", "moved"))
+        self.assertIn("Serial c5c5c5c5", self.run_tool("status"))
+
+    def test_status_says_when_a_result_is_another_pis(self):       # XB3
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.run_tool("apply")
+        self.serial("bbbb0000")
+        self.reboot("[all]\nBOOT_ORDER=0xf41\n", boot="boot-3")
+        st = self.status_state()
+        self.assertEqual(st["status"], "other-pi")
+        self.assertIn("a1b2c3d4", st["reason"])
+
+    def test_the_move_shows_in_status_text(self):               # XB4
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.serial("bbbb0000")
+        self.run_tool("apply")
+        out = self.run_tool("status")
+        self.assertIn("took an update staged on Raspberry Pi a1b2c3d4", out)
+
+    def test_a_second_removal_does_not_promise_a_retry(self):    # XB5
+        self.run_tool("apply")
+        self.service()
+        self.reboot(FACTORY)
+        self.run_tool("apply")                                   # staged again (attempt 2)
+        self.service()
+        reason = self.state()["reason"]
+        self.assertIn("not staged again automatically", reason)
+        self.assertNotIn("stages it again at the next boot", reason)
+
+    def test_a_move_survives_a_deferral(self):                    # XB7
+        self.run_tool("apply")
+        self.reboot("[all]\nBOOT_ORDER=0xf41\n")
+        self.serial("bbbb0000")
+        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "immediate 1\n")
+        self.run_tool("apply")
+        self.assertEqual((self.state()["status"], self.state()["moved_from"]), ("deferred", "a1b2c3d4"))
+        self.reboot("[all]\nBOOT_ORDER=0xf41\n", boot="boot-3")
+        self.run_tool("apply")
+        self.assertEqual((self.state()["status"], self.state()["moved_from"]), ("staged", "a1b2c3d4"))
 
     def test_watch_without_a_staged_update_does_nothing(self):
         self.service()

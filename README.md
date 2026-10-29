@@ -387,19 +387,25 @@ How it changes the EEPROM, and what it leaves alone:
   the update). A failure after `rpi-eeprom-update` ran takes the staged
   update back. An update that `rpi-eeprom-update.service` removed before the
   reboot (an `rpi-eeprom` upgrade restarts it) is staged once more at the next
-  boot; one you take back yourself (`rpi-eeprom-update -r`,
-  `rpi-eeprom-config --apply`, `raspi-config`) stays taken back.
+  boot, unless an update of your own was applied after it (`genesis-eeprom
+  cancel` also stops the retry); one you take back yourself
+  (`rpi-eeprom-update -r`, `rpi-eeprom-config --apply`, `raspi-config`) stays
+  taken back.
 * Until the Pi that staged it reboots, the update waits on the boot medium:
-  reboot that Pi before moving the card or drive to another Raspberry Pi. If
-  it moves anyway, the next Pi 5 records that it took the other Pi's update.
+  reboot that Pi before moving the card or drive to another Raspberry Pi (a
+  Pi 5, Pi 500 or CM5 would take it at power-on). If it moves anyway, the next
+  Pi 5 records that it took the other Pi's update, and `genesis-eeprom status`
+  shows which Pi a recorded result belongs to.
 
 On the Pi: `sudo genesis-eeprom status`; `sudo genesis-eeprom first nvme`
 (or `sd`, `usb`, `auto`) to change the boot medium later, which Genesis
 Settings → System → Boot first from also does; `sudo genesis-eeprom cancel`
 takes back a staged update before the reboot. The config from before Genesis
 first changed it is kept in `/var/lib/genesis/eeprom/original.conf` (`original.serial`
-names the Pi it belongs to). The bootloader cannot show a custom logo (it has
-no setting for one); the Genesis splash starts with the OS.
+names the Pi it belongs to; another Pi's is kept as `original-SERIAL.conf` and
+comes back when the medium returns to that Pi; `original.unknown` lists Pis
+whose own config was never seen). The bootloader cannot show a custom logo
+(it has no setting for one); the Genesis splash starts with the OS.
 
 ### Boot firmware (`config.txt`, `cmdline.txt`)
 

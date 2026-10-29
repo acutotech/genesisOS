@@ -373,9 +373,13 @@ class GenesisSettings(Gtk.Window):
             self.bl_apply.set_sensitive(False)
             reason = info.get("reason", "unknown")
             if reason == "not a Raspberry Pi 5":
-                self.bl_state.set_text("Bootloader settings are for a Raspberry Pi 5.")
+                text = "Bootloader settings are for a Raspberry Pi 5."
             else:
-                self.bl_state.set_text("Bootloader settings are not available: %s." % reason)
+                text = "Bootloader settings are not available: %s." % reason
+            state = info.get("state") or {}
+            if state.get("status") == "moved":
+                text += "\nGenesis OS: " + state.get("reason", "")
+            self.bl_state.set_text(text)
             return False
         self.bl_version.set_text("%s · %s" % (info.get("version", "?"), info.get("booted_from", "?")))
         self.bl_order.set_text(info.get("boot_order_text") or info.get("boot_order", "?"))

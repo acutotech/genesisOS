@@ -199,7 +199,7 @@ bootloader() {
 		echo "  info  its -r clears a staged update's pending flag"
 	fi
 	bcheck "rpi-eeprom-update.service runs genesis-eeprom watch around itself" \
-		grep -qx 'ExecStartPost=-/usr/lib/genesis/genesis-eeprom watch after' \
+		grep -qx 'ExecStopPost=-/usr/lib/genesis/genesis-eeprom watch after' \
 		"${ROOT}/usr/lib/systemd/system/rpi-eeprom-update.service.d/genesis-eeprom.conf"
 	grep -h '^ExecStart' "${ROOT}/usr/lib/systemd/system/rpi-eeprom-update.service" 2> /dev/null | sed 's/^/  info  rpi-eeprom-update.service: /'
 	grep -n 'rpi-eeprom-update' "${ROOT}/var/lib/dpkg/info/rpi-eeprom.postinst" 2> /dev/null | sed 's/^/  info  rpi-eeprom.postinst:/'

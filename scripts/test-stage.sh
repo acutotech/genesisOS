@@ -207,6 +207,7 @@ assert_grep '^ConditionPathExists=!/var/lib/genesis/eeprom/done$' "${ROOTFS_DIR}
 DROPIN="${ROOTFS_DIR}/usr/lib/systemd/system/rpi-eeprom-update.service.d/genesis-eeprom.conf"
 assert_grep '^ExecStartPre=-/usr/lib/genesis/genesis-eeprom watch before$' "${DROPIN}"
 assert_grep '^ExecStartPost=-/usr/lib/genesis/genesis-eeprom watch after$' "${DROPIN}"
+assert_grep '^ExecStopPost=-/usr/lib/genesis/genesis-eeprom watch after$' "${DROPIN}"   # also after a failed run
 assert_grep '^systemctl enable genesis-eeprom.service$' "${CHROOT_LOG}"
 assert_grep '^enabled=1$' "${BLCONF}"
 assert_grep '^boot_first=auto$' "${BLCONF}"
