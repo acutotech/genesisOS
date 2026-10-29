@@ -197,6 +197,9 @@ bootloader() {
 		grep -q 'rpi-eeprom-update-pending' "${ROOT}/usr/bin/rpi-eeprom-update"
 	if grep -qF 'grep -q "^recovery"' "${ROOT}/usr/bin/rpi-eeprom-update"; then
 		echo "  info  its -r clears a staged update's pending flag"
+	else
+		echo "  info  its -r (a take-back made during a service run then looks like the service's removal):"
+		sed -n '/^ *r) *\[/,/;;/p' "${ROOT}/usr/bin/rpi-eeprom-update" | sed 's/^/  info  | /'
 	fi
 	bcheck "rpi-eeprom-update.service runs genesis-eeprom watch around itself" \
 		grep -qx 'ExecStopPost=-/usr/lib/genesis/genesis-eeprom watch after' \
