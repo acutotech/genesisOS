@@ -671,7 +671,7 @@ def check_staged(state: dict) -> str:
                          "the reboot (taken back with rpi-eeprom-update -r, rpi-eeprom-config --apply or raspi-config, "
                          "or replaced by another bootloader update) or the bootloader did not take it; "
                          "sudo genesis-eeprom apply --again stages it again")
-        elif written_since(state):
+        elif written_since(state) or state.get("superseded"):
             state.update(status="not-applied", reason="after rpi-eeprom-update removed the staged update, another "
                          "bootloader update was applied (for example rpi-eeprom-update -a, rpi-eeprom-config --apply "
                          "or raspi-config); it stands. sudo genesis-eeprom apply --again stages the Genesis settings "
@@ -790,6 +790,9 @@ def run_apply(again: bool) -> int:
             if read_text("original.conf") is not None and not (read_text("original.serial") or "").strip():
                 write_text("original.serial", other + "\n")
             settle_originals(board_serial())          # the Pi 5's original is not this board's
+            if state["status"] == "staged" and board_serial():
+                # its bootloader may have taken the update: its own config from before is not known
+                write_text("original.unknown", "\n".join(sorted(unknown_originals() | {board_serial()})) + "\n")
             what = ("came here with the medium, and this board's bootloader may have taken it at power-on "
                     "(sudo rpi-eeprom-config shows what it runs)" if state["status"] == "staged" else
                     "had been removed before that Pi rebooted")
@@ -825,7 +828,7 @@ def run_apply(again: bool) -> int:
         log("bootloader customisation is off (enabled=0 in /etc/genesis/bootloader.conf)")
         if recorded != "off" or carry:
             # nothing is staged now, whatever was recorded before (a cancelled choice, a retry)
-            save_state({"status": "off", "reason": "bootloader customisation is off (enabled=0 in "
+            save_state({**carry, "status": "off", "reason": "bootloader customisation is off (enabled=0 in "
                         "/etc/genesis/bootloader.conf); nothing is staged"})
         return 0
     try:
@@ -859,9 +862,11 @@ def run_apply(again: bool) -> int:
                   "eeprom_update": dt_int("chosen/bootloader/update-timestamp")}
         save_state({**base, **staged, **stamps, "status": "staged", "reason": reason + moved, "boot_id": boot_id(),
                     "attempts": attempts})
-        if os.path.exists(path(WATCH)):
-            # rpi-eeprom-update.service is running (an upgrade): `watch after` must look for this update
-            with open(path(WATCH), "w", encoding="ascii") as fh:
+        # rpi-eeprom-update.service is running (an upgrade) while a marker is there: `watch after` must
+        # look for this update. Never create one: a marker `after` already removed stays removed.
+        with contextlib.suppress(FileNotFoundError):
+            fd = os.open(path(WATCH), os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(fd, "w", encoding="ascii") as fh:
                 fh.write(staged["upd_sha256"] + "\n")
         log(f"{reason}: BOOT_ORDER {describe_order(settings_in(desired)[0].get('BOOT_ORDER'))}")
     except Skip as why:
@@ -897,15 +902,27 @@ def watch(phase: str) -> int:
             return watch_locked(phase)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as why:
         log(f"watch {phase}: {why}")
-        if phase == "after":
-            # never leave it for a later stop to misread: a lost record only means no retry
-            with contextlib.suppress(OSError):
+        with contextlib.suppress(OSError):
+            if phase == "after":
+                # never leave it for a later stop to misread: a lost record only means no retry
                 os.remove(path(WATCH))
+            else:
+                # the service runs now: an apply holding the lock puts its own update's sha here
+                with open(path(WATCH), "w", encoding="ascii") as fh:
+                    fh.write("-\n")
     return 0
 
 
 def watch_locked(phase: str) -> int:
     state, marker = load_state(), path(WATCH)
+    if state.get("status") == "removed" and state.get("boot_id") == boot_id() and not state.get("superseded") \
+            and pending_line() != state.get("pending_line"):
+        # since the removal someone staged, flashed or took back an update: no retry over it
+        state.update(superseded=True, reason="rpi-eeprom-update removed the staged update, and another bootloader "
+                     "update was made since; that one stands (sudo genesis-eeprom apply --again stages the Genesis "
+                     "settings again)")
+        save_state(state)
+        log(state["reason"])
     if phase == "before":
         # the marker says the service is running; it names Genesis's update when one is intact, and
         # an apply that stages while the service runs puts its own there
@@ -944,9 +961,10 @@ def cancel() -> int:
         return 1
     with locked():
         state = load_state()
+        # its update file is on this card or drive, whichever Pi staged it
+        ours = state.get("status") == "staged" and staged_intact(state) is not False
         if state.get("serial") and state["serial"] != board_serial():
             state = {}   # another Pi's record (its notes are not this Pi's)
-        ours = state.get("status") == "staged" and staged_intact(state) is not False
         gone = cancel_staged() if ours else True
         if not gone:
             reason = "cancel requested, but an update may still be staged on the boot partition"
@@ -975,8 +993,12 @@ def status() -> dict:
         out["available"] = True
     except Skip as why:
         out["reason"] = str(why)
-    # "off" comes from bootloader.conf, which travels with the medium: true on any Pi
-    if state.get("serial") and serial and state["serial"] != serial and state.get("status") != "off":
+    other = bool(state.get("serial") and serial and state["serial"] != serial)
+    if other and state.get("status") == "off":
+        # "off" comes from bootloader.conf, which travels with the medium: true on any Pi; a move noted
+        # on the Pi that recorded it is not this one's
+        out["state"] = {k: v for k, v in state.items() if k not in ("notes", "moved_from")}
+    elif other:
         hint = "choosing a boot medium applies the Genesis settings here" if out["available"] else \
             "Genesis OS changes nothing on this board"
         out["state"] = {**state, "status": "other-pi", "notes": [],
@@ -1063,9 +1085,10 @@ def main(argv: list[str] | None = None) -> int:
             if info.get("original"):
                 print(f"Config before Genesis OS {info['original']}")
             elif info.get("original_unknown"):
-                print("Config before Genesis OS unknown (this Pi took another Pi's update before Genesis saw it)")
+                print("Config before Genesis OS unknown (this board took, or may have taken, another Pi's update "
+                      "before Genesis saw its own config)")
             else:
-                print("Config before Genesis OS none recorded (Genesis OS has not changed this Pi's bootloader)")
+                print("Config before Genesis OS none recorded on this card or drive")
             state = info.get("state") or {}
             if state:
                 print(f"Genesis: {state.get('status')}: {state.get('reason', '')}")

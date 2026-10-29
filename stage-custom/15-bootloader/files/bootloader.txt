@@ -22,8 +22,8 @@ rpi-eeprom-config --apply, raspi-config) stays taken back. Only one that
 rpi-eeprom-update.service removed (an rpi-eeprom upgrade restarts it; status
 then says "removed") is staged again at the next boot, and the reboot after
 that applies it. To stop that, run "sudo genesis-eeprom cancel"; any update
-applied before that reboot (rpi-eeprom-update -a, rpi-eeprom-config --apply,
-raspi-config) also stands.
+applied or staged before that reboot (rpi-eeprom-update -a, rpi-eeprom-config
+--apply, raspi-config) also stands.
 
 The boot order keeps SD card, NVMe and USB in it, so any of them boots.
 "auto" puts the medium Genesis OS booted from first.
@@ -33,9 +33,10 @@ The config the bootloader had before Genesis first changed it is kept in
 "Config before Genesis OS" line. That is original.conf (original.serial names
 its Pi), or original-SERIAL.conf when the card or drive was set up on another
 Pi since (it becomes original.conf again the next time Genesis OS changes this
-Pi's bootloader). "none recorded" means Genesis OS has not changed this Pi's
-bootloader; "unknown" means this Pi took another Pi's update before Genesis
-saw its own config. To go back to it:
+Pi's bootloader). "none recorded" means this card or drive holds none for this
+Pi (Genesis OS on it has not changed this Pi's bootloader; an earlier install
+may have); "unknown" means this board took, or may have taken, another Pi's
+update before Genesis saw its own config. To go back to it:
 
   sudo rpi-eeprom-config --apply FILE     (the file status names)
 

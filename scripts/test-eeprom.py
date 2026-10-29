@@ -872,7 +872,7 @@ class Program(unittest.TestCase):
         self.run_tool("apply")                                   # B took A's update
         info = json.loads(self.run_tool("status", "--json"))
         self.assertEqual((info["original"], info["original_unknown"]), (None, True))
-        self.assertIn("unknown (this Pi took another Pi's update", self.run_tool("status"))
+        self.assertIn("unknown (this board took, or may have taken, another Pi's update", self.run_tool("status"))
 
     def test_cancel_on_another_pis_record_starts_this_pis_own(self):   # R5-XB-2
         self.run_tool("apply")
@@ -896,15 +896,69 @@ class Program(unittest.TestCase):
         self.write(os.path.join(self.root, "proc", "device-tree", "system", "linux,revision"), be32(0xD04180), binary=True)
         self.assertEqual(self.status_state()["status"], "other-pi")
 
-    def test_off_carries_no_move_record(self):
+    def test_off_keeps_its_move_record_on_its_own_board_only(self):   # R6-DS-3
         self.run_tool("apply")
         self.reboot(self.staged_conf())
         self.serial("bbbb0000")
         self.settings("enabled=0\n")
         self.run_tool("apply")
-        st = self.state()
+        self.assertEqual(self.state()["status"], "off")
+        self.assertIn("took an update staged on Raspberry Pi a1b2c3d4", self.run_tool("status"))
+        self.serial("a1b2c3d4")                                  # on A: still off, but not A's move
+        st = self.status_state()
         self.assertEqual(st["status"], "off")
         self.assertNotIn("notes", st)
+        self.assertNotIn("took an update", self.run_tool("status"))
+
+    def test_a_before_that_cannot_lock_still_marks_the_run(self):    # R5-SM3
+        import fcntl
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.run_tool("apply")                                   # applied, done
+        lock = os.path.join(self.root, "run", "genesis-eeprom.lock")
+        with open(lock, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)                       # Settings is staging and holds the lock
+            self.run_tool("watch", "before", GENESIS_EEPROM_LOCK_WAIT="0.5")
+        with open(os.path.join(self.root, "run", "genesis-eeprom-watch")) as fh:
+            self.assertEqual(fh.read().strip(), "-")
+        self.run_tool("first", "usb")                            # its staging finishes and puts its sha there
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root})
+        self.run_tool("watch", "after")
+        self.assertEqual(self.state()["status"], "removed")
+
+    def test_an_apply_never_creates_the_marker(self):            # R6-SM1
+        self.run_tool("first", "usb")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "run", "genesis-eeprom-watch")))
+
+    def test_an_update_made_after_the_removal_stops_the_retry(self):   # R6-SM2
+        self.run_tool("apply")
+        self.service()
+        self.assertEqual(self.state()["status"], "removed")
+        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "recovery 42\n")   # the user's go-back
+        self.service()                                           # a second upgrade removes it again
+        self.assertTrue(self.state()["superseded"])
+        self.reboot(FACTORY)
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "not-applied")
+        self.assertEqual(self.calls().count("-d -f"), 1)
+
+    def test_a_pi500_that_may_have_taken_the_update_is_unknown(self):   # R6-DS-1
+        self.run_tool("apply")
+        self.reboot(FACTORY)
+        self.serial("c5c5c5c5")
+        self.write(os.path.join(self.root, "proc", "device-tree", "system", "linux,revision"), be32(0xD04190), binary=True)
+        self.run_tool("apply")
+        info = json.loads(self.run_tool("status", "--json"))
+        self.assertEqual((info["original"], info["original_unknown"]), (None, True))
+
+    def test_cancel_on_another_board_takes_back_the_update_on_the_medium(self):   # R6-DS-2
+        self.run_tool("apply")                                   # A stages and does not reboot
+        self.serial("bbbb0000")                                  # B: its own run did not get to save anything
+        self.boot_id("boot-2")
+        self.run_tool("cancel")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "boot", "firmware", "pieeprom.upd")))
+        self.assertEqual((self.state()["status"], self.state()["serial"]), ("cancelled", "bbbb0000"))
 
     def test_watch_without_a_staged_update_does_nothing(self):
         self.service()

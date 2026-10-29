@@ -404,8 +404,9 @@ Settings → System → Boot first from also does; `sudo genesis-eeprom cancel`
 takes back a staged update before the reboot. The config from before Genesis
 first changed it is kept in `/var/lib/genesis/eeprom/original.conf`, per Pi:
 `genesis-eeprom status` names this Pi's file (`original-SERIAL.conf` when the
-medium was set up on another Pi since; "none recorded" when Genesis never
-changed this Pi; "unknown" when this Pi took another Pi's update first). The
+medium was set up on another Pi since; "none recorded" when this medium holds
+none for this Pi; "unknown" when this board took, or may have taken, another
+Pi's update first). The
 bootloader cannot show a custom logo (it has no setting for one); the Genesis
 splash starts with the OS.
 
