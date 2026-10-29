@@ -241,7 +241,7 @@ elif args[:2] == ["-d", "-f"]:
         fh.write(digest + "\nts: 1\n")
     os.makedirs(os.path.dirname(pending), exist_ok=True)
     with open(pending, "w") as fh:
-        fh.write("recovery %d\n" % time.time())
+        fh.write("recovery %d\n" % time.time_ns())
     if rc:
         sys.exit(rc)   # e.g. copying recovery.bin failed after the update was written
 elif args in (["-r"], ["-s", "-a"]):
@@ -256,7 +256,7 @@ elif args in (["-r"], ["-s", "-a"]):
         with open(os.path.join(bootfs, "pieeprom.upd"), "wb") as fh:
             fh.write(b"newer bootloader")
         with open(pending, "w") as fh:
-            fh.write("recovery %d\n" % time.time())
+            fh.write("recovery %d\n" % time.time_ns())
 else:
     sys.exit(64)
 '''
@@ -562,7 +562,8 @@ class Program(unittest.TestCase):
     def test_another_update_the_service_staged_is_never_taken_back(self):
         self.run_tool("apply")
         self.service(STUB_AUTO_NEW="1")                          # the upgrade staged a newer bootloader
-        self.assertEqual(self.state()["status"], "removed")
+        self.assertEqual(self.state()["status"], "staged")       # it wrote: not a plain removal, no retry
+        self.assertEqual(self.status_state()["status"], "gone")
         self.run_tool("first", "usb")
         self.assertEqual(self.state()["status"], "deferred")
         with open(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "rb") as fh:
@@ -582,15 +583,16 @@ class Program(unittest.TestCase):
         self.assertTrue(self.done())
         self.assertEqual(self.calls().count("-d -f"), 1)
 
-    def test_a_newer_bootloader_from_the_upgrade_still_gets_the_settings(self):
+    def test_rpi_eeprom_update_a_after_the_removal_stands(self):     # R5-SM4
         self.run_tool("apply")
         self.service()
         self.reboot(FACTORY)
-        self.dt("build-timestamp", 1792764809)                   # the upgrade flashed a newer bootloader
+        self.dt("build-timestamp", 1792764809)                   # the user ran rpi-eeprom-update -a
         self.dt("update-timestamp", 1792764900)
-        self.assertIn("staging it again", self.run_tool("apply"))
+        self.run_tool("apply")
         st = self.state()
-        self.assertEqual((st["status"], st["image"]), ("staged", "pieeprom-2026-10-23.bin"))
+        self.assertEqual(st["status"], "not-applied")
+        self.assertIn("rpi-eeprom-update -a", st["reason"])
 
     def test_cancel_leaves_another_update_alone(self):            # SM2
         self.run_tool("apply")
@@ -744,13 +746,46 @@ class Program(unittest.TestCase):
         self.assertEqual(self.state()["status"], "not-applied")
         self.assertEqual(self.calls().count("-d -f"), 1)
 
-    def test_the_services_own_write_before_the_removal_is_not_a_go_back(self):
+    def test_a_go_back_during_the_service_run_stands(self):        # R5-SM2
         self.run_tool("apply")
-        self.service()
-        removed_at = self.state()["removed_at"]
+        self.run_tool("watch", "before")
+        image = os.path.join(self.tmp, "go-back.bin")
+        self.write(image, "the user's image " * 8)
+        self.write(image + ".conf", FACTORY)
+        self.user_update("-d", "-f", image)                      # rpi-eeprom-config --apply original.conf
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root})
+        self.run_tool("watch", "after")
+        self.assertEqual(self.state()["status"], "staged")       # not the service's removal
         self.reboot(FACTORY)
-        self.dt("update-timestamp", removed_at - 5)              # stamped by the service before `watch after`
-        self.assertIn("staging it again", self.run_tool("apply"))
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "not-applied")
+        self.assertEqual(self.calls().count("-d -f"), 2)               # Genesis's staging and the user's go-back
+
+    def test_a_take_back_during_the_service_run_stands(self):
+        self.run_tool("apply")
+        self.run_tool("watch", "before")
+        self.user_update("-r")
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root})
+        self.run_tool("watch", "after")
+        self.assertEqual(self.state()["status"], "staged")
+        self.reboot(FACTORY)
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "not-applied")
+
+    def test_a_watch_that_timed_out_leaves_nothing_for_a_later_stop(self):   # R5-SM1
+        import fcntl
+        self.run_tool("apply")
+        self.run_tool("watch", "before")
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root})
+        with open(os.path.join(self.root, "run", "genesis-eeprom.lock"), "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)                       # Settings holds the lock past the wait
+            self.assertIn("is held", self.run_tool("watch", "after", GENESIS_EEPROM_LOCK_WAIT="0.5"))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "run", "genesis-eeprom-watch")))
+        self.run_tool("watch", "after")                          # a later stop (shutdown): nothing to misread
+        self.assertEqual(self.state()["status"], "staged")
 
     def test_a_choice_made_while_the_service_runs_with_nothing_staged_is_watched(self):   # R2
         self.run_tool("apply")
@@ -826,6 +861,50 @@ class Program(unittest.TestCase):
         st = self.status_state()
         self.assertEqual(st["status"], "other-pi")
         self.assertIn("changes nothing on this board", st["reason"])
+
+    def test_status_tells_unknown_from_none(self):               # R5-XB-1
+        info = json.loads(self.run_tool("status", "--json"))
+        self.assertEqual((info["original"], info["original_unknown"]), (None, False))
+        self.assertIn("none recorded", self.run_tool("status"))
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.serial("bbbb0000")
+        self.run_tool("apply")                                   # B took A's update
+        info = json.loads(self.run_tool("status", "--json"))
+        self.assertEqual((info["original"], info["original_unknown"]), (None, True))
+        self.assertIn("unknown (this Pi took another Pi's update", self.run_tool("status"))
+
+    def test_cancel_on_another_pis_record_starts_this_pis_own(self):   # R5-XB-2
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.serial("cccc0000")
+        self.run_tool("apply")                                   # C took A's update: its note
+        self.serial("a1b2c3d4")
+        self.run_tool("cancel")
+        st = self.state()
+        self.assertEqual((st["status"], st["serial"], st.get("notes")), ("cancelled", "a1b2c3d4", None))
+        self.assertNotIn("took an update", self.run_tool("status"))
+
+    def test_a_moved_record_is_shown_only_on_its_board(self):     # R5-XB-3
+        self.run_tool("apply")
+        self.reboot(FACTORY)
+        self.serial("c5c5c5c5")
+        self.write(os.path.join(self.root, "proc", "device-tree", "system", "linux,revision"), be32(0xD04190), binary=True)
+        self.run_tool("apply")                                   # a Pi 500 records "moved"
+        self.assertEqual(self.status_state()["status"], "moved")
+        self.serial("d4d4d4d4")                                  # then a CM5
+        self.write(os.path.join(self.root, "proc", "device-tree", "system", "linux,revision"), be32(0xD04180), binary=True)
+        self.assertEqual(self.status_state()["status"], "other-pi")
+
+    def test_off_carries_no_move_record(self):
+        self.run_tool("apply")
+        self.reboot(self.staged_conf())
+        self.serial("bbbb0000")
+        self.settings("enabled=0\n")
+        self.run_tool("apply")
+        st = self.state()
+        self.assertEqual(st["status"], "off")
+        self.assertNotIn("notes", st)
 
     def test_watch_without_a_staged_update_does_nothing(self):
         self.service()

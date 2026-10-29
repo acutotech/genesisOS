@@ -387,8 +387,9 @@ How it changes the EEPROM, and what it leaves alone:
   the update). A failure after `rpi-eeprom-update` ran takes the staged
   update back. An update that `rpi-eeprom-update.service` removed before the
   reboot (an `rpi-eeprom` upgrade restarts it) is staged once more at the next
-  boot, unless an update of your own was applied after it (`genesis-eeprom
-  cancel` also stops the retry); one you take back yourself
+  boot, unless another update was applied after it (`rpi-eeprom-update -a`,
+  `rpi-eeprom-config --apply`, `raspi-config`; `genesis-eeprom cancel` also
+  stops the retry); one you take back yourself
   (`rpi-eeprom-update -r`, `rpi-eeprom-config --apply`, `raspi-config`) stays
   taken back.
 * Until the Pi that staged it reboots, the update waits on the boot medium:
@@ -403,9 +404,10 @@ Settings → System → Boot first from also does; `sudo genesis-eeprom cancel`
 takes back a staged update before the reboot. The config from before Genesis
 first changed it is kept in `/var/lib/genesis/eeprom/original.conf`, per Pi:
 `genesis-eeprom status` names this Pi's file (`original-SERIAL.conf` when the
-medium was set up on another Pi since, or unknown when this Pi took another
-Pi's update first). The bootloader cannot show a custom logo (it has no
-setting for one); the Genesis splash starts with the OS.
+medium was set up on another Pi since; "none recorded" when Genesis never
+changed this Pi; "unknown" when this Pi took another Pi's update first). The
+bootloader cannot show a custom logo (it has no setting for one); the Genesis
+splash starts with the OS.
 
 ### Boot firmware (`config.txt`, `cmdline.txt`)
 

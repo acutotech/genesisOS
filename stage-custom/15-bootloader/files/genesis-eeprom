@@ -32,11 +32,12 @@ How it changes the EEPROM, and why:
   An update that rpi-eeprom-update.service removed before the reboot (an
   rpi-eeprom upgrade restarts it, and it removes staged updates) is staged once
   more: a drop-in runs `genesis-eeprom watch` before and after that service, so
-  only a removal by the service counts. One taken back any other way
+  only a removal by the service counts (its pending flag unchanged, nothing
+  written). One taken back any other way
   (rpi-eeprom-update -r, rpi-eeprom-config --apply, raspi-config) stays taken back,
-  and so does an update of anyone's own applied after the removal
-  (rpi-eeprom-update stamps each image it writes with the time, and the
-  bootloader reports the stamp it runs). `genesis-eeprom cancel` stops a retry.
+  and so does any update applied after the removal (rpi-eeprom-update stamps
+  each image it writes, and the bootloader reports the stamp it runs).
+  `genesis-eeprom cancel` stops a retry.
 
 Only a Raspberry Pi 5 (not a CM5 or Pi 500, whose factory settings differ) is
 touched, never in a chroot (the image build and CI see the build host's /proc),
@@ -80,6 +81,8 @@ PENDING = "/run/rpi-eeprom-update-pending"
 WATCH = "/run/genesis-eeprom-watch"       # `watch before` found Genesis's staged update intact
 LOCK = "/run/genesis-eeprom.lock"         # one genesis-eeprom at a time changes the state
 LOCK_WAIT = 30                            # seconds watch waits: rpi-eeprom-update.service is never held up longer
+if ROOT:
+    LOCK_WAIT = float(os.environ.get("GENESIS_EEPROM_LOCK_WAIT", LOCK_WAIT))
 EEPROM_DEFAULTS = "/etc/default/rpi-eeprom-update"
 
 IMAGE_SIZE = 2 * 1024 * 1024
@@ -436,12 +439,8 @@ def stage(config: str, workdir: str) -> dict:
     try:
         # staged, not written at once: the bootloader applies it at the next reboot
         run(tool("rpi-eeprom-update"), "-d", "-f", built, env={"RPI_EEPROM_IMMEDIATE_UPDATE": "0"})
-        pending = ""
-        try:
-            with open(path(PENDING), encoding="ascii", errors="replace") as fh:
-                pending = fh.read().split(" ", 1)[0].strip()
-        except OSError:
-            pass
+        line = pending_line() or ""
+        pending = (line.split() or [""])[0]
         if pending != "recovery":
             raise RuntimeError(f"rpi-eeprom-update did not stage the update (pending: {pending or 'nothing'})")
         bootfs = boot_fs()
@@ -461,7 +460,7 @@ def stage(config: str, workdir: str) -> dict:
             "an update may still be staged: run sudo rpi-eeprom-update -r before rebooting"
         raise StageFailed(f"{why}; {left}") from why
     return {"image": os.path.basename(image), "version": stamp_date(image_stamps(image)[0]), "path": pending,
-            "upd": upd, "upd_sha256": digest}
+            "upd": upd, "upd_sha256": digest, "pending_line": line}
 
 
 class StageFailed(Exception):
@@ -488,6 +487,15 @@ def staged_intact(state: dict) -> bool | None:
     except FileNotFoundError:
         return False
     except OSError:
+        return None
+
+
+def pending_line() -> str | None:
+    """rpi-eeprom-update's pending flag ("recovery <time>" or "immediate <time>"), or None."""
+    try:
+        with open(path(PENDING), encoding="ascii", errors="replace") as fh:
+            return fh.readline().strip()
+    except FileNotFoundError:
         return None
 
 
@@ -639,16 +647,16 @@ def load_settings() -> dict:
 
 
 def written_since(state: dict) -> bool:
-    """Whether someone's own update was applied after rpi-eeprom-update.service removed Genesis's.
+    """Whether another update was applied after rpi-eeprom-update.service removed Genesis's.
 
-    rpi-eeprom-update stamps every image it writes with the time, and the bootloader
-    reports the stamp of the image it runs (update-timestamp). The service's own
-    update (an upgrade's newer bootloader) was stamped before `watch after` recorded
-    the removal; one stamped later is someone's own (rpi-eeprom-config --apply,
-    raspi-config), whatever bootloader version it carries.
+    rpi-eeprom-update stamps every image it writes, and the bootloader reports the
+    stamp of the image it runs (update-timestamp). "removed" is recorded only when
+    the service wrote nothing (its pending flag is the one Genesis's staging left),
+    so a different stamp at the next boot is an update someone applied after it
+    (rpi-eeprom-update -a, rpi-eeprom-config --apply, raspi-config): it stands.
     """
-    removed_at, now = state.get("removed_at"), dt_int("chosen/bootloader/update-timestamp")
-    return removed_at is not None and now is not None and now != state.get("eeprom_update") and now > removed_at
+    before, now = state.get("eeprom_update"), dt_int("chosen/bootloader/update-timestamp")
+    return before is not None and now is not None and now != before
 
 
 def check_staged(state: dict) -> str:
@@ -659,13 +667,15 @@ def check_staged(state: dict) -> str:
     elif running == read_text("previous.conf"):
         if state.get("status") != "removed":
             # nothing saw rpi-eeprom-update.service remove it: someone took it back, and that stands
-            state.update(status="not-applied", reason="the staged update was not applied: it was taken back before "
-                         "the reboot (rpi-eeprom-update -r, rpi-eeprom-config --apply or raspi-config) or the "
-                         "bootloader did not take it; sudo genesis-eeprom apply --again stages it again")
+            state.update(status="not-applied", reason="the staged update was not applied: it was gone before "
+                         "the reboot (taken back with rpi-eeprom-update -r, rpi-eeprom-config --apply or raspi-config, "
+                         "or replaced by another bootloader update) or the bootloader did not take it; "
+                         "sudo genesis-eeprom apply --again stages it again")
         elif written_since(state):
             state.update(status="not-applied", reason="after rpi-eeprom-update removed the staged update, another "
-                         "update with the config from before was applied (rpi-eeprom-config --apply or raspi-config); "
-                         "it stands. sudo genesis-eeprom apply --again stages the Genesis settings again")
+                         "bootloader update was applied (for example rpi-eeprom-update -a, rpi-eeprom-config --apply "
+                         "or raspi-config); it stands. sudo genesis-eeprom apply --again stages the Genesis settings "
+                         "again")
         elif int(state.get("attempts", 1)) < MAX_ATTEMPTS:
             log("the staged update was removed by rpi-eeprom-update before the reboot; staging it again")
             return "retry"
@@ -815,7 +825,7 @@ def run_apply(again: bool) -> int:
         log("bootloader customisation is off (enabled=0 in /etc/genesis/bootloader.conf)")
         if recorded != "off" or carry:
             # nothing is staged now, whatever was recorded before (a cancelled choice, a retry)
-            save_state({**carry, "status": "off", "reason": "bootloader customisation is off (enabled=0 in "
+            save_state({"status": "off", "reason": "bootloader customisation is off (enabled=0 in "
                         "/etc/genesis/bootloader.conf); nothing is staged"})
         return 0
     try:
@@ -887,6 +897,10 @@ def watch(phase: str) -> int:
             return watch_locked(phase)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as why:
         log(f"watch {phase}: {why}")
+        if phase == "after":
+            # never leave it for a later stop to misread: a lost record only means no retry
+            with contextlib.suppress(OSError):
+                os.remove(path(WATCH))
     return 0
 
 
@@ -905,10 +919,15 @@ def watch_locked(phase: str) -> int:
         os.remove(marker)
     except FileNotFoundError:
         return 0   # nothing of Genesis's was intact before, or `after` already ran (ExecStopPost)
+    # The service's plain removal (removePreviousUpdates) deletes the files and leaves the pending
+    # flag exactly as Genesis's staging wrote it. rpi-eeprom-update -r deletes the flag, and any
+    # write (someone's go-back, raspi-config, the service's own update) writes a new one: those stand.
     if state.get("status") == "staged" and state.get("boot_id") == boot_id() \
-            and seen == state.get("upd_sha256") and staged_intact(state) is False:
+            and seen == state.get("upd_sha256") and staged_intact(state) is False \
+            and not os.path.exists(state["upd"]) and state.get("pending_line") \
+            and pending_line() == state["pending_line"]:
         again = int(state.get("attempts", 1)) < MAX_ATTEMPTS
-        state.update(status="removed", removed_at=int(time.time()), reason="rpi-eeprom-update removed the staged "
+        state.update(status="removed", reason="rpi-eeprom-update removed the staged "
                      "update (an rpi-eeprom upgrade); " + (
             "Genesis OS stages it again at the next boot, and the reboot after that applies it (sudo genesis-eeprom "
             "cancel stops that)" if again else "it is not staged again automatically: sudo genesis-eeprom apply "
@@ -925,6 +944,8 @@ def cancel() -> int:
         return 1
     with locked():
         state = load_state()
+        if state.get("serial") and state["serial"] != board_serial():
+            state = {}   # another Pi's record (its notes are not this Pi's)
         ours = state.get("status") == "staged" and staged_intact(state) is not False
         gone = cancel_staged() if ours else True
         if not gone:
@@ -948,12 +969,14 @@ def status() -> dict:
     state = out["state"] = load_state()
     serial = out["serial"] = board_serial()
     out["original"] = original_path(serial)
+    out["original_unknown"] = out["original"] is None and bool(serial) and serial in unknown_originals()
     try:
         out["boot_mode"] = gate()
         out["available"] = True
     except Skip as why:
         out["reason"] = str(why)
-    if state.get("serial") and serial and state["serial"] != serial and state.get("status") not in ("moved", "off"):
+    # "off" comes from bootloader.conf, which travels with the medium: true on any Pi
+    if state.get("serial") and serial and state["serial"] != serial and state.get("status") != "off":
         hint = "choosing a boot medium applies the Genesis settings here" if out["available"] else \
             "Genesis OS changes nothing on this board"
         out["state"] = {**state, "status": "other-pi", "notes": [],
@@ -1037,7 +1060,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Bootloader {info['version']}, booted from {info['booted_from']}")
                 print(f"Boot order {info.get('boot_order', '?')}: {info.get('boot_order_text', '')}")
             print(f"Serial {info.get('serial') or 'unknown'}")
-            print(f"Config before Genesis OS {info.get('original') or 'unknown'}")
+            if info.get("original"):
+                print(f"Config before Genesis OS {info['original']}")
+            elif info.get("original_unknown"):
+                print("Config before Genesis OS unknown (this Pi took another Pi's update before Genesis saw it)")
+            else:
+                print("Config before Genesis OS none recorded (Genesis OS has not changed this Pi's bootloader)")
             state = info.get("state") or {}
             if state:
                 print(f"Genesis: {state.get('status')}: {state.get('reason', '')}")
