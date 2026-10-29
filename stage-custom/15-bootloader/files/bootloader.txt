@@ -14,13 +14,21 @@ is never undone.
 
 Until the Pi that staged it reboots, the update waits on this card or drive.
 Reboot that Pi before moving the card or drive to another Raspberry Pi: the
-next Pi 5 to boot it would take the update instead.
+next Pi 5 to boot it would take the update instead (genesis-eeprom status
+then says so).
+
+A staged update you take back yourself (sudo rpi-eeprom-update -r,
+rpi-eeprom-config --apply, raspi-config) stays taken back. Only one that
+rpi-eeprom-update.service removed (an rpi-eeprom upgrade restarts it) is
+staged again at the next boot; the reboot after that applies it.
 
 The boot order keeps SD card, NVMe and USB in it, so any of them boots.
 "auto" puts the medium Genesis OS booted from first.
 
 The config the bootloader had before Genesis first changed it is in
-/var/lib/genesis/eeprom/original.conf. To go back to it:
+/var/lib/genesis/eeprom/original.conf; original.serial next to it names the
+Pi it belongs to (compare "genesis-eeprom status"; another Pi's is kept as
+original-SERIAL.conf). To go back to it:
 
   sudo rpi-eeprom-config --apply /var/lib/genesis/eeprom/original.conf
 

@@ -192,6 +192,17 @@ bootloader() {
 	fi
 	# shellcheck disable=SC2016  # a dpkg-query format, not a shell expansion
 	echo "  info  $(chroot "${ROOT}" dpkg-query -W -f '${Package} ${Version}  ' rpi-eeprom flashrom rpieepromab 2> /dev/null)"
+	# genesis-eeprom stage() requires the "recovery" pending flag; read the image's own script, not upstream's
+	bcheck "the image's rpi-eeprom-update marks a staged update pending" \
+		grep -q 'rpi-eeprom-update-pending' "${ROOT}/usr/bin/rpi-eeprom-update"
+	if grep -qF 'grep -q "^recovery"' "${ROOT}/usr/bin/rpi-eeprom-update"; then
+		echo "  info  its -r clears a staged update's pending flag"
+	fi
+	bcheck "rpi-eeprom-update.service runs genesis-eeprom watch around itself" \
+		grep -qx 'ExecStartPost=-/usr/lib/genesis/genesis-eeprom watch after' \
+		"${ROOT}/usr/lib/systemd/system/rpi-eeprom-update.service.d/genesis-eeprom.conf"
+	grep -h '^ExecStart' "${ROOT}/usr/lib/systemd/system/rpi-eeprom-update.service" 2> /dev/null | sed 's/^/  info  rpi-eeprom-update.service: /'
+	grep -n 'rpi-eeprom-update' "${ROOT}/var/lib/dpkg/info/rpi-eeprom.postinst" 2> /dev/null | sed 's/^/  info  rpi-eeprom.postinst:/'
 	# fixed settings, so the checks below do not depend on this build's EEPROM_* knobs
 	printf 'enabled=1\nboot_first=auto\npcie_probe=1\nnet_install_at_power_on=0\npower_off_on_halt=keep\n' > "${ROOT}/tmp/smoke-bootloader.conf"
 	if [ -n "${image}" ]; then
@@ -220,6 +231,8 @@ bootloader() {
 	bcheck "it knows it runs in a chroot (${out:-no answer})" test "${out}" = chroot
 	out="$(chroot "${ROOT}" /usr/lib/genesis/genesis-eeprom apply 2>&1)"
 	bcheck "in a chroot the service touches nothing (${out})" grep -qE 'skip: chroot|customisation is off' <<< "${out}"
+	bcheck "watch is harmless with nothing staged" chroot "${ROOT}" /bin/sh -c \
+		'/usr/lib/genesis/genesis-eeprom watch before && /usr/lib/genesis/genesis-eeprom watch after'
 	bcheck "no bootloader update was staged on the card" test ! -e "${ROOT}/boot/firmware/pieeprom.upd" -a ! -e "${ROOT}/boot/firmware/recovery.bin"
 	bcheck "no bootloader state was recorded in the image" test ! -e "${ROOT}/var/lib/genesis/eeprom/state.json"
 	echo "image-smoke: bootloader: ${failures} failure(s)"

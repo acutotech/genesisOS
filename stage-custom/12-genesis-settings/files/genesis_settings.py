@@ -399,7 +399,7 @@ class GenesisSettings(Gtk.Window):
         lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
         if result.returncode != 0:
             self.error("The bootloader was not changed", (result.stderr or result.stdout).strip())
-        elif any("staged" in line for line in lines):
+        elif any(line.startswith("genesis-eeprom: staged;") for line in lines):
             self.show_banner("Bootloader update staged: it is written at the next reboot.")
         else:
             self.show_banner(lines[-1].replace("genesis-eeprom: ", "Bootloader: ") if lines else "Bootloader unchanged.")

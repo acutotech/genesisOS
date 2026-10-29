@@ -239,12 +239,19 @@ elif args[:2] == ["-d", "-f"]:
         fh.write("recovery %d\n" % time.time())
     if rc:
         sys.exit(rc)   # e.g. copying recovery.bin failed after the update was written
-elif args == ["-r"]:
-    for name in ("pieeprom.upd", "pieeprom.upd.conf", "pieeprom.sig"):
+elif args in (["-r"], ["-s", "-a"]):
+    # removePreviousUpdates; only -r also clears a "recovery" flag, as upstream does
+    for name in ("pieeprom.upd", "pieeprom.upd.conf", "pieeprom.sig", "recovery.bin"):
         if os.path.exists(os.path.join(bootfs, name)):
             os.remove(os.path.join(bootfs, name))
-    if os.path.exists(pending):
+    if args == ["-r"] and os.path.exists(pending) and open(pending).read().startswith("recovery"):
         os.remove(pending)
+    if args == ["-s", "-a"] and os.environ.get("STUB_AUTO_NEW"):
+        # the upgrade brought a newer bootloader: staged with the running config
+        with open(os.path.join(bootfs, "pieeprom.upd"), "wb") as fh:
+            fh.write(b"newer bootloader")
+        with open(pending, "w") as fh:
+            fh.write("recovery %d\n" % time.time())
 else:
     sys.exit(64)
 '''
@@ -325,6 +332,23 @@ class Program(unittest.TestCase):
         with open(os.path.join(self.root, "boot", "firmware", "pieeprom.upd.conf")) as fh:
             return fh.read()
 
+    def service(self, **env):
+        """rpi-eeprom-update.service with the Genesis drop-in (an rpi-eeprom upgrade restarts it)."""
+        self.run_tool("watch", "before")
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), "-s", "-a"], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root, **env})
+        self.run_tool("watch", "after")
+
+    def user_update(self, *args):
+        subprocess.run([os.path.join(self.tools, "rpi-eeprom-update"), *args], check=True,
+                       env={**os.environ, "GENESIS_EEPROM_ROOT": self.root, "RPI_EEPROM_IMMEDIATE_UPDATE": "0"})
+
+    def eeprom_file(self, name):
+        return os.path.join(self.root, "var", "lib", "genesis", "eeprom", name)
+
+    def status_state(self):
+        return json.loads(self.run_tool("status", "--json"))["state"]
+
     def reboot(self, running, boot="boot-2"):
         for name in ("pieeprom.upd", "pieeprom.upd.conf", "pieeprom.sig"):   # what rpi-eeprom-update.service cleans
             p = os.path.join(self.root, "boot", "firmware", name)
@@ -348,6 +372,8 @@ class Program(unittest.TestCase):
         self.assertNotIn("pieeprom-2026-10-23", self.calls())      # never a newer bootloader version
         with open(os.path.join(self.root, "var", "lib", "genesis", "eeprom", "original.conf")) as fh:
             self.assertEqual(fh.read(), FACTORY)
+        with open(self.eeprom_file("original.serial")) as fh:
+            self.assertEqual(fh.read().strip(), "a1b2c3d4")
         # the same boot again (service restarted): nothing new is staged
         before = self.calls()
         self.assertIn("applied at the next reboot", self.run_tool("apply"))
@@ -386,6 +412,7 @@ class Program(unittest.TestCase):
         self.assertNotIn("rpi-eeprom-update -d", self.calls())
 
     def test_another_pending_update_defers_then_gives_up(self):
+        self.write(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "someone else's update")
         for attempt in range(1, 4):
             self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "recovery 1\n")
             self.boot_id(f"boot-{attempt}")
@@ -470,16 +497,66 @@ class Program(unittest.TestCase):
         self.assertIn("does not hold the planned config", self.state()["reason"])
         self.assertFalse(os.path.exists(os.path.join(self.root, "boot", "firmware", "pieeprom.upd")))
 
-    def test_an_update_removed_before_the_reboot_is_staged_once_more(self):
+    def test_an_update_the_service_removed_is_staged_once_more(self):
         self.run_tool("apply")
+        self.service()                                           # an rpi-eeprom upgrade, in the staging boot
+        self.assertEqual(self.state()["status"], "removed")
+        self.assertEqual(self.status_state()["status"], "removed")   # said in the same boot, not "staged"
+        self.assertIn("removed", self.run_tool("apply"))         # nothing more this boot
         self.reboot(FACTORY)                                     # never reached the bootloader
         out = self.run_tool("apply")
         self.assertIn("staging it again", out)
         self.assertEqual((self.state()["status"], self.state()["attempts"]), ("staged", 2))
+        self.service(boot="boot-2")
         self.reboot(FACTORY, boot="boot-3")                      # and again: give up
         self.run_tool("apply")
         self.assertEqual(self.state()["status"], "failed")
         self.assertTrue(self.done())
+
+    def test_a_users_r_in_the_staging_boot_stands(self):         # REG1
+        self.run_tool("apply")
+        self.user_update("-r")                                   # upstream's documented cancel
+        self.assertFalse(os.path.exists(os.path.join(self.root, "run", "rpi-eeprom-update-pending")))
+        self.assertEqual(self.status_state()["status"], "gone")
+        self.service()                                           # an upgrade later in the same boot
+        self.assertEqual(self.state()["status"], "staged")       # not mistaken for the service's removal
+        self.reboot(FACTORY)
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "not-applied")
+        self.assertTrue(self.done())
+        self.assertEqual(self.calls().count("-d -f"), 1)         # never staged again
+
+    def test_a_users_revert_in_the_staging_boot_stands(self):    # REG1: rpi-eeprom-config --apply, raspi-config
+        self.run_tool("apply")
+        self.write(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "the user's own update")
+        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "immediate 1\n")
+        self.service()
+        self.assertEqual(self.state()["status"], "staged")
+        self.reboot(FACTORY)                                     # the user's config is the one from before
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "not-applied")
+        self.assertEqual(self.calls().count("-d -f"), 1)
+
+    def test_after_the_service_removed_it_settings_can_stage_it_again_at_once(self):
+        self.run_tool("apply")
+        self.service()                                           # leaves a stale "recovery" flag behind
+        self.run_tool("first", "usb")
+        self.assertEqual(self.state()["status"], "staged")
+        self.assertIn("BOOT_ORDER=0xf614", self.staged_conf())
+
+    def test_another_update_the_service_staged_is_never_taken_back(self):
+        self.run_tool("apply")
+        self.service(STUB_AUTO_NEW="1")                          # the upgrade staged a newer bootloader
+        self.assertEqual(self.state()["status"], "removed")
+        self.run_tool("first", "usb")
+        self.assertEqual(self.state()["status"], "deferred")
+        with open(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "rb") as fh:
+            self.assertEqual(fh.read(), b"newer bootloader")
+        self.assertEqual(self.calls().count(" -r "), 0)
+
+    def test_watch_without_a_staged_update_does_nothing(self):
+        self.service()
+        self.assertFalse(os.path.exists(self.eeprom_file("state.json")))
 
     def test_original_conf_keeps_the_config_from_before_genesis(self):
         self.run_tool("apply")
@@ -491,14 +568,66 @@ class Program(unittest.TestCase):
         with open(os.path.join(self.root, "var", "lib", "genesis", "eeprom", "original.conf")) as fh:
             self.assertEqual(fh.read(), FACTORY)
 
-    def test_moved_to_another_pi_before_the_reboot(self):
+    def test_moved_to_another_pi_that_took_the_update(self):
         self.run_tool("apply")
         self.reboot("[all]\nBOOT_UART=1\nBOOT_ORDER=0xf416\nNET_INSTALL_AT_POWER_ON=0\nPCIE_PROBE=1\n")
         self.write(os.path.join(self.root, "proc", "device-tree", "serial-number"), b"ffff0000\x00", binary=True)
         out = self.run_tool("apply")
-        self.assertIn("another Raspberry Pi", out)
-        self.assertEqual(self.state()["status"], "unchanged")    # planned again for this board: it already has it
-        self.assertEqual(self.state()["serial"], "ffff0000")
+        self.assertIn("staged on Raspberry Pi a1b2c3d4", out)
+        st = self.state()
+        self.assertEqual((st["status"], st["serial"], st["moved_from"]), ("unchanged", "ffff0000", "a1b2c3d4"))
+        self.assertTrue(any("took an update staged on Raspberry Pi a1b2c3d4" in n for n in st["notes"]), st)
+        # the first Pi's config is set aside, and none is claimed for this one
+        self.assertFalse(os.path.exists(self.eeprom_file("original.conf")))
+        with open(self.eeprom_file("original-a1b2c3d4.conf")) as fh:
+            self.assertEqual(fh.read(), FACTORY)
+        self.run_tool("first", "usb")
+        self.assertEqual(self.state()["status"], "staged")
+        self.assertFalse(os.path.exists(self.eeprom_file("original.conf")))
+
+    def test_moved_to_another_pi_that_did_not_take_it(self):
+        self.run_tool("apply")
+        own = "[all]\nBOOT_UART=1\nBOOT_ORDER=0xf41\n"
+        self.reboot(own)
+        self.write(os.path.join(self.root, "proc", "device-tree", "serial-number"), b"ffff0000\x00", binary=True)
+        self.run_tool("apply")
+        st = self.state()
+        self.assertEqual((st["status"], st["moved_from"]), ("staged", "a1b2c3d4"))
+        with open(self.eeprom_file("original.conf")) as fh:
+            self.assertEqual(fh.read(), own)                     # this Pi's own
+        with open(self.eeprom_file("original.serial")) as fh:
+            self.assertEqual(fh.read().strip(), "ffff0000")
+        self.assertTrue(os.path.exists(self.eeprom_file("original-a1b2c3d4.conf")))
+
+    def test_moved_to_a_board_that_is_not_a_pi5(self):
+        self.run_tool("apply")
+        self.reboot(FACTORY)
+        self.write(os.path.join(self.root, "proc", "device-tree", "system", "linux,revision"), be32(0xD04190), binary=True)
+        self.assertIn("not a Raspberry Pi 5", self.run_tool("apply"))   # a Pi 500
+        st = self.state()
+        self.assertEqual((st["status"], st["moved_from"]), ("moved", "a1b2c3d4"))
+        self.assertNotEqual(self.status_state()["status"], "staged")
+        self.assertEqual(self.calls().count("-d -f"), 1)
+
+    def test_turned_off_after_staging_is_not_staged_forever(self):   # state/F5
+        self.run_tool("apply")
+        self.settings("enabled=0\n")
+        self.run_tool("apply", "--again")                       # takes Genesis's own update back
+        self.assertFalse(os.path.exists(os.path.join(self.root, "boot", "firmware", "pieeprom.upd")))
+        self.assertEqual(self.state()["status"], "off")
+        self.reboot(FACTORY)
+        self.run_tool("apply")
+        self.assertEqual(self.status_state()["status"], "off")
+        self.assertEqual(self.calls().count("-d -f"), 1)
+
+    def test_turned_off_before_a_retry(self):                      # state/F5, the retry path
+        self.run_tool("apply")
+        self.service()
+        self.settings("enabled=0\n")
+        self.reboot(FACTORY)
+        self.run_tool("apply")
+        self.assertEqual(self.state()["status"], "off")
+        self.assertEqual(self.calls().count("-d -f"), 1)
 
     def test_a_leftover_update_file_without_a_pending_flag_does_not_block(self):
         self.write(os.path.join(self.root, "boot", "firmware", "pieeprom.upd"), "old")
@@ -506,7 +635,7 @@ class Program(unittest.TestCase):
         self.assertEqual(self.state()["status"], "staged")
 
     def test_deferrals_count_boots_not_runs(self):
-        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "recovery 1\n")
+        self.write(os.path.join(self.root, "run", "rpi-eeprom-update-pending"), "immediate 1\n")
         for _ in range(4):
             self.run_tool("apply")                               # the same boot, four times
         self.assertEqual((self.state()["status"], self.state()["deferrals"]), ("deferred", 1))

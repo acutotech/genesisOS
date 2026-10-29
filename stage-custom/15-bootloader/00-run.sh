@@ -25,6 +25,8 @@ install -D -m 755 files/genesis-eeprom "${ROOTFS_DIR}/usr/lib/genesis/genesis-ee
 install -d -m 755 "${ROOTFS_DIR}/usr/sbin" "${ROOTFS_DIR}/etc/genesis"
 ln -sf /usr/lib/genesis/genesis-eeprom "${ROOTFS_DIR}/usr/sbin/genesis-eeprom"
 install -D -m 644 files/genesis-eeprom.service "${ROOTFS_DIR}/usr/lib/systemd/system/genesis-eeprom.service"
+install -D -m 644 files/rpi-eeprom-update-genesis.conf \
+	"${ROOTFS_DIR}/usr/lib/systemd/system/rpi-eeprom-update.service.d/genesis-eeprom.conf"
 install -D -m 644 files/bootloader.txt "${ROOTFS_DIR}/usr/share/doc/genesis/bootloader.txt"
 install -d -m 755 "${ROOTFS_DIR}/var/lib/genesis/eeprom"
 
