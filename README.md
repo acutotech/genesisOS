@@ -192,10 +192,7 @@ Flashed with Genesis Imager, the box boots to the Genesis splash, logs your
 user into the Genesis desktop, joins the Wi-Fi, and answers on
 `nodobox.local` (or the host name you chose) for SSH and VNC with the password
 you typed. `genesis-setup-result.txt` on the boot partition says what was
-applied; `/var/log/genesis-firstboot.log` on the box has the details. On a
-Raspberry Pi 5 the first boot also stages the Genesis bootloader settings
-(boot order for the medium it booted from, see *Bootloader* below); the
-bootloader takes them at the next reboot.
+applied; `/var/log/genesis-firstboot.log` on the box has the details.
 
 Flashed with any other tool, the image behaves like the official one: the
 first-boot wizard asks for a user name and password. The build-time secrets
@@ -319,7 +316,6 @@ know, so nothing can apply to one build path only. Keep secrets out of it.
 | `PERSISTENT_JOURNAL`, `JOURNAL_MAX_USE` | journald storage |
 | `ENABLE_UNATTENDED_UPGRADES` | automatic updates from Debian security and the Raspberry Pi archive |
 | `ENABLE_SERVICES`, `DISABLE_SERVICES` | systemd units to `enable` / `disable` in the image |
-| `EEPROM_CUSTOMIZE`, `EEPROM_BOOT_FIRST`, `EEPROM_PCIE_PROBE`, `EEPROM_NET_INSTALL_AT_POWER_ON`, `EEPROM_POWER_OFF_ON_HALT` | Raspberry Pi 5 bootloader settings, applied on the Pi (see below) |
 
 Every knob can also be set as an environment variable for a local build
 (`ENABLE_I2C=1 make build`). Secrets go in `stage-custom/secrets.env`
@@ -354,61 +350,6 @@ Sub-stages run in name order; `90-services` runs last on purpose so
 `ENABLE_SERVICES` can refer to units your own sub-stages install. `make test`
 fails if a `*-run.sh` is not executable: pi-gen only logs a `Skip` line for
 it and the build succeeds without your changes.
-
-### Bootloader (Raspberry Pi 5 EEPROM)
-
-The bootloader lives in an EEPROM chip on each Pi, not in the image, so the
-build only writes the wanted settings to `/etc/genesis/bootloader.conf`;
-`genesis-eeprom.service` applies them on the first boot of a Pi 5 and the
-bootloader takes them at the next reboot. Defaults:
-
-| Setting | Default | Effect |
-| --- | --- | --- |
-| `EEPROM_BOOT_FIRST` | `auto` | The medium Genesis OS booted from is tried first; SD card, NVMe and USB all stay in `BOOT_ORDER` (SD boot `0xf461`, NVMe boot `0xf416`, USB boot `0xf614`). So an SD card, an NVMe SSD or a USB drive written with Genesis OS all boot, and the box keeps preferring the one it was set up on. `sd`, `nvme`, `usb` force one; `keep` leaves `BOOT_ORDER` alone. |
-| `EEPROM_PCIE_PROBE` | `1` | Finds NVMe drives on M.2 adapters that are not HAT+ too |
-| `EEPROM_NET_INSTALL_AT_POWER_ON` | `0` | No Raspberry Pi network-install screen at every power-on; still available by holding SHIFT and when nothing boots |
-| `EEPROM_POWER_OFF_ON_HALT` | `keep` | `1` draws about 0.01 W after shutdown (some HATs dislike it) |
-| `EEPROM_CUSTOMIZE` | `1` | `0`: the bootloader is left alone unless a boot medium is chosen later in Genesis Settings |
-
-How it changes the EEPROM, and what it leaves alone:
-
-* It edits the config the bootloader is running, only the keys above, and
-  never inside a conditional `[section]` you set yourself.
-* It writes no new bootloader version: the update is the packaged image of the
-  running version with only its config replaced, checked by reading it back,
-  and staged (never written at once) so it applies at the next reboot.
-* It runs once. The boot after, it records whether the bootloader took the
-  settings; after that it never runs again, so a change you make later with
-  `raspi-config` or `rpi-eeprom-config` stays.
-* Only a Raspberry Pi 5 (not a CM5 or Pi 500), never with secure boot,
-  `FREEZE_VERSION=1` in any section, or `RPI_EEPROM_IMMEDIATE_UPDATE=1` in
-  `/etc/default/rpi-eeprom-update`, never during the image build, and not
-  while the clock is behind the bootloader's last update (it would ignore
-  the update). A failure after `rpi-eeprom-update` ran takes the staged
-  update back. An update that `rpi-eeprom-update.service` removed before the
-  reboot (an `rpi-eeprom` upgrade restarts it) is staged once more at the next
-  boot, unless another update was applied after it (`rpi-eeprom-update -a`,
-  `rpi-eeprom-config --apply`, `raspi-config`; `genesis-eeprom cancel` also
-  stops the retry); one you take back yourself
-  (`rpi-eeprom-update -r`, `rpi-eeprom-config --apply`, `raspi-config`) stays
-  taken back.
-* Until the Pi that staged it reboots, the update waits on the boot medium:
-  reboot that Pi before moving the card or drive to another Raspberry Pi (a
-  Pi 5, Pi 500 or CM5 would take it at power-on). If it moves anyway, the next
-  Pi 5 records that it took the other Pi's update, and `genesis-eeprom status`
-  shows which Pi a recorded result belongs to.
-
-On the Pi: `sudo genesis-eeprom status`; `sudo genesis-eeprom first nvme`
-(or `sd`, `usb`, `auto`) to change the boot medium later, which Genesis
-Settings → System → Boot first from also does; `sudo genesis-eeprom cancel`
-takes back a staged update before the reboot. The config from before Genesis
-first changed it is kept in `/var/lib/genesis/eeprom/original.conf`, per Pi:
-`genesis-eeprom status` names this Pi's file (`original-SERIAL.conf` when the
-medium was set up on another Pi since; "none recorded" when this medium holds
-none for this Pi; "unknown" when this board took, or may have taken, another
-Pi's update first). The
-bootloader cannot show a custom logo (it has no setting for one); the Genesis
-splash starts with the OS.
 
 ### Boot firmware (`config.txt`, `cmdline.txt`)
 
@@ -481,10 +422,7 @@ characters, idempotence, invalid input, cloud-init disabled). It cannot tell
 you whether a package name exists in trixie or whether the image boots; the
 CI build and a real device do that. `make test` also runs
 `scripts/test-shell-logic.py` (I2C scan parsing, sensor debounce and
-notification texts, desktop label contrast), `scripts/test-eeprom.py` (the
-bootloader settings) and the Genesis Imager tests. The image build's smoke test
-also embeds the planned bootloader config into the image's packaged bootloader
-with its own `rpi-eeprom-config` and reads it back.
+notification texts, desktop label contrast) and the Genesis Imager tests.
 
 ## Repository layout
 
@@ -512,14 +450,12 @@ stage-custom/
   12-genesis-settings/          Genesis Settings app and its privileged helper
   13-system-defaults/           interfaces, VNC, browser, autologin, default session, splash flags
   14-first-boot/                genesis-firstboot.service and the setup-area placeholder on the boot partition
-  15-bootloader/                genesis-eeprom: Raspberry Pi 5 bootloader settings, applied once on the Pi
   90-services/                  enable/disable systemd units (runs last)
   secrets.env.example           template for secrets.env
 branding/src/                   the logo and wallpaper the assets are generated from
 scripts/make-assets.py          regenerates icons, splash and wallpapers (needs Pillow)
 scripts/make-sensor-icons.py    regenerates the sensor box icons A-K (SVG, standard library only)
 scripts/test-shell-logic.py     unit tests for Genesis Shell logic that needs no display
-scripts/test-eeprom.py          genesis-eeprom: boot order rules, config merge, and its state machine on a fake Pi 5
 scripts/image-smoke.sh          writes a built image through Genesis Imager, runs first boot and the
                                 headless desktop test inside it
 scripts/test-firstboot.sh       genesis-firstboot against a fake root (no root rights needed)
@@ -593,21 +529,6 @@ imager/                         Genesis Imager (genesis_imager.py) and its tests
   `/usr/share/genesis-shell/preview.sh /tmp/p` over SSH to reproduce headless.
   The stock Raspberry Pi desktop is still available from the login screen's
   session menu.
-* **A Pi 5 does not boot after a bootloader change:** hold SPACE at power-on
-  for the boot menu and pick another medium, or reset the bootloader from any
-  computer: Raspberry Pi Imager → Misc utility images → Bootloader → SD Card
-  Boot, write it to a spare SD card, boot the Pi from it and wait for the green
-  screen. That restores Raspberry Pi's factory settings (Genesis does not apply
-  its own again by itself). Genesis OS on an SD card, a USB drive or an NVMe
-  HAT+ then boots as before; an NVMe drive on an adapter that is not HAT+
-  needs `PCIE_PROBE=1` back: boot Genesis OS from an SD card, run
-  `sudo genesis-eeprom first nvme`, reboot, and remove the card.
-* **`genesis-eeprom status` says "deferred" or "failed":** another bootloader
-  update was pending, the clock was not set yet, or package rpi-eeprom has no
-  image of the bootloader version on the board (it is newer than the
-  package). Nothing was staged (a failure after staging takes the update back
-  and says so). `sudo genesis-eeprom apply --again` tries again, for example
-  after an `apt upgrade`.
 * **The sensor bar never appears although a box is plugged in:** run
   `/usr/sbin/i2cdetect -y 1 0x10 0x3a` as your user (`/usr/sbin` is not on a
   normal user's `PATH`). "No such file" means I2C is off

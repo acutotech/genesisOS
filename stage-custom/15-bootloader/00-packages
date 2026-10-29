@@ -1,4 +1,0 @@
-# The tools genesis-eeprom drives (rpi-eeprom-config, rpi-eeprom-update) and the
-# packaged bootloader images it rebuilds with a new config. Part of Raspberry Pi
-# OS already; listed so a trimmed base cannot drop them.
-rpi-eeprom

@@ -9,7 +9,6 @@
 #   genesis-helper timezone <Area/City>
 #   genesis-helper locale <xx_YY.UTF-8>
 #   genesis-helper wifi-country <CC>
-#   genesis-helper bootloader-first auto|sd|nvme|usb|keep   Pi 5 EEPROM: drive tried first (applied at the next reboot)
 set -eu
 
 RC=/usr/bin/raspi-config
@@ -114,9 +113,5 @@ case "${1:-}" in
 	timezone) need_root; "$RC" nonint do_change_timezone "${2:?zone}" ;;
 	locale) need_root; "$RC" nonint do_change_locale "${2:?locale}" ;;
 	wifi-country) need_root; "$RC" nonint do_wifi_country "${2:?country}" ;;
-	bootloader-first)
-		need_root
-		case "${2:-}" in auto | sd | nvme | usb | keep) ;; *) die "bootloader-first takes auto, sd, nvme, usb or keep" ;; esac
-		exec /usr/lib/genesis/genesis-eeprom first "$2" ;;
-	*) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+	*) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

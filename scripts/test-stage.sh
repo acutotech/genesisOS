@@ -115,7 +115,6 @@ reset_knobs() {
 	unset ENABLE_SERIAL_PORT ENABLE_SERIAL_CONSOLE ENABLE_ONEWIRE ENABLE_VNC GENESIS_WALLPAPER GENESIS_ACCENT GENESIS_BLANK_TIMEOUT
 	unset GENESIS_PANEL_POSITION GENESIS_PANEL_LAUNCHERS DESKTOP_AUTOLOGIN DEFAULT_BROWSER ENABLE_BOOT_SPLASH
 	unset INSTALL_VSCODE VSCODE_EXTENSIONS PYTHON_PRIMARY PYTHON_LATEST GENESIS_PRUNE_WORK
-	unset EEPROM_CUSTOMIZE EEPROM_BOOT_FIRST EEPROM_PCIE_PROBE EEPROM_NET_INSTALL_AT_POWER_ON EEPROM_POWER_OFF_ON_HALT
 	export ENABLE_CLOUD_INIT="1" WPA_COUNTRY="IN" ARCH="arm64"
 }
 
@@ -197,28 +196,6 @@ assert_exec "${ROOTFS_DIR}/usr/lib/genesis/genesis-firstboot"
 assert_file "${ROOTFS_DIR}/usr/lib/systemd/system/genesis-firstboot.service"
 assert_grep '^Before=userconfig.service lightdm.service' "${ROOTFS_DIR}/usr/lib/systemd/system/genesis-firstboot.service"
 assert_grep '^systemctl enable genesis-firstboot.service$' "${CHROOT_LOG}"
-# Raspberry Pi 5 bootloader settings (applied on the Pi, never at build time)
-BLCONF="${ROOTFS_DIR}/etc/genesis/bootloader.conf"
-assert_exec "${ROOTFS_DIR}/usr/lib/genesis/genesis-eeprom"
-assert_eq "$(readlink "${ROOTFS_DIR}/usr/sbin/genesis-eeprom")" /usr/lib/genesis/genesis-eeprom "genesis-eeprom on root's PATH"
-assert_file "${ROOTFS_DIR}/usr/share/doc/genesis/bootloader.txt"
-assert_grep '^After=rpi-eeprom-update.service' "${ROOTFS_DIR}/usr/lib/systemd/system/genesis-eeprom.service"
-assert_grep '^ConditionPathExists=!/var/lib/genesis/eeprom/done$' "${ROOTFS_DIR}/usr/lib/systemd/system/genesis-eeprom.service"
-DROPIN="${ROOTFS_DIR}/usr/lib/systemd/system/rpi-eeprom-update.service.d/genesis-eeprom.conf"
-assert_grep '^ExecStartPre=-/usr/lib/genesis/genesis-eeprom watch before$' "${DROPIN}"
-assert_grep '^ExecStartPost=-/usr/lib/genesis/genesis-eeprom watch after$' "${DROPIN}"
-assert_grep '^ExecStopPost=-/usr/lib/genesis/genesis-eeprom watch after$' "${DROPIN}"   # also after a failed run
-assert_grep '^systemctl enable genesis-eeprom.service$' "${CHROOT_LOG}"
-assert_grep '^enabled=1$' "${BLCONF}"
-assert_grep '^boot_first=auto$' "${BLCONF}"
-assert_grep '^pcie_probe=1$' "${BLCONF}"
-assert_grep '^net_install_at_power_on=0$' "${BLCONF}"
-assert_grep '^power_off_on_halt=keep$' "${BLCONF}"
-assert_grep '^rpi-eeprom$' "${STAGE_DIR}/15-bootloader/00-packages"
-assert_no_grep 'rpi-eeprom-update' "${CHROOT_LOG}"   # nothing is flashed while building
-printf '[all]\nBOOT_UART=1\nBOOT_ORDER=0xf461\nNET_INSTALL_AT_POWER_ON=1\n' > "${WORK}/factory.conf"
-assert_eq "$(python3 "${ROOTFS_DIR}/usr/lib/genesis/genesis-eeprom" plan --settings "${BLCONF}" --running "${WORK}/factory.conf" --boot-mode 6 | tr '\n' ' ')" \
-	"[all] BOOT_UART=1 BOOT_ORDER=0xf416 NET_INSTALL_AT_POWER_ON=0 PCIE_PROBE=1 " "the rendered bootloader.conf plans NVMe first on an NVMe boot"
 assert_eq "$(stat -c %s "${ROOTFS_DIR}/boot/firmware/genesis-setup.txt")" 8192 "setup area is 16 x 512 bytes"
 if cmp -s "${ROOTFS_DIR}/boot/firmware/genesis-setup.txt" <(python3 "${REPO_DIR}/imager/genesis_imager.py" --write-placeholder /dev/stdout); then
 	ok "setup area placeholder matches Genesis Imager's"
@@ -319,7 +296,6 @@ export GENESIS_WALLPAPER=genesis-aurora GENESIS_PANEL_POSITION=bottom GENESIS_PA
 export DEFAULT_BROWSER=firefox ENABLE_VNC=0 DESKTOP_AUTOLOGIN=0 INSTALL_VSCODE=0
 export ENABLE_SERVICES='hello-custom.service' DISABLE_SERVICES='bluetooth.service hciuart.service'
 export PERSISTENT_JOURNAL=0 ENABLE_UNATTENDED_UPGRADES=0
-export EEPROM_CUSTOMIZE=0 EEPROM_BOOT_FIRST=nvme EEPROM_PCIE_PROBE=keep
 printf 'CUSTOM_GIT_SHA=abc123\nCUSTOM_GIT_REF=main\nCUSTOM_BUILD_URL=https://example.test/run/1\nPASSWORDLESS_SUDO=1\n' > "${STAGE_DIR}/build-info.env"
 run_stage
 rm -f "${STAGE_DIR}/build-info.env"
@@ -334,9 +310,6 @@ assert_grep '^launchers = code lxterminal$' "${ROOTFS_DIR}/etc/genesis/shell.con
 assert_grep '^file = /usr/share/genesis/wallpapers/genesis-aurora.jpg$' "${ROOTFS_DIR}/etc/genesis/shell.conf"
 assert_grep '^accent = #ff8800$' "${ROOTFS_DIR}/etc/genesis/shell.conf"
 assert_grep '^blank_timeout = 0$' "${ROOTFS_DIR}/etc/genesis/shell.conf"
-assert_grep '^enabled=0$' "${ROOTFS_DIR}/etc/genesis/bootloader.conf"
-assert_grep '^boot_first=nvme$' "${ROOTFS_DIR}/etc/genesis/bootloader.conf"
-assert_grep '^systemctl enable genesis-eeprom.service$' "${CHROOT_LOG}"   # always on; enabled=0 makes it a no-op
 assert_grep '@define-color genesis_accent #ff8800;' "${ROOTFS_DIR}/usr/share/themes/GenesisGlass/gtk-3.0/gtk.css"
 assert_grep '^gtk-color-scheme = "selected_bg_color:#ff8800"$' "${ROOTFS_DIR}/usr/share/themes/GenesisGlass/gtk-2.0/gtkrc"
 # the session scripts and the installer parse, and the control tool rejects garbage
@@ -446,14 +419,6 @@ if (cd "${STAGE_DIR}/02-cloud-init" && WIFI_SSID=open-net ./00-run.sh > /dev/nul
 else
 	fail "open network (no password) should be accepted"
 fi
-
-for bad in EEPROM_BOOT_FIRST=floppy EEPROM_PCIE_PROBE=yes EEPROM_CUSTOMIZE=2; do
-	if (cd "${STAGE_DIR}/15-bootloader" && env "${bad}" ./00-run.sh > /dev/null 2>&1); then
-		fail "${bad} should fail the build"
-	else
-		ok "${bad} fails the build"
-	fi
-done
 
 # ===================================================================================
 echo "Scenario 5: ENABLE_CLOUD_INIT=0 leaves the boot partition files alone"

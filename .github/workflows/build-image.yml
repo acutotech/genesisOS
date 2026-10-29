@@ -50,9 +50,6 @@ jobs:
       - name: Dry-run the custom stage
         run: make test
 
-      - name: The bootloader drop-in under a real systemd
-        run: sudo GENESIS_CI=1 scripts/test-dropin-systemd.sh
-
   shell-preview:
     name: Genesis Shell headless preview
     needs: lint
