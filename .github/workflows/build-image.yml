@@ -50,6 +50,11 @@ jobs:
       - name: Dry-run the custom stage
         run: make test
 
+      # make test runs unprivileged, which skips these: acu-connect.service runs as root
+      # and switches the client to the desktop user
+      - name: Acu Connect supervisor tests as root
+        run: sudo python3 -I scripts/test-acu-connect.py -k as_root
+
   shell-preview:
     name: Genesis Shell headless preview
     needs: lint

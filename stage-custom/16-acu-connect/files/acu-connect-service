@@ -10,9 +10,13 @@ waits for a new signin, so the service never ends up stopped for good.
 
 The service itself runs as root and starts the client as the desktop user (uid
 1000, whatever its name is now) only while that is safe:
-  - not while a first-boot rename of that user is pending (Raspberry Pi's wizard
-    or rename-user): usermod cannot rename a user that has running processes, and
-    the wizard would leave the account half renamed;
+  - not while a rename of that user is pending (Raspberry Pi's first-boot wizard
+    or rename-user, desktop or console: rename_user.conf exists until the rename
+    is done or cancelled): usermod cannot rename a user that has running
+    processes, and the wizard would leave the account half renamed. A client
+    that is already running is stopped only when the wizard session itself
+    starts, not when rename-user arms it: rename-user may be running in one of
+    the client's own remote shells, and the rename happens after a reboot;
   - not with a link other than the one it started with: `acu-connect signin
     --force` or `signout` take effect at once, and a revoke reported by the old
     client never sets aside a new link.
@@ -27,16 +31,20 @@ import signal
 import stat
 import subprocess
 import sys
-import threading
 import time
 
-CONFIG_DIR = os.environ.get("ACU_CONFIG_DIR") or "/var/lib/acu-connect"
+DEFAULT_DIR = "/var/lib/acu-connect"
+CONFIG_DIR = os.environ.get("ACU_CONFIG_DIR") or DEFAULT_DIR
 CONFIG = os.path.join(CONFIG_DIR, "agent.json")
 # Tests point these at stand-ins; the image runs the client on this interpreter as uid 1000.
 CLIENT = os.environ.get("ACU_CONNECT_CLIENT", "").split() or [sys.executable, "-I", "-m", "acu_connect"]
 UID = int(os.environ.get("ACU_CONNECT_UID") or 1000)
-# present while a first-boot rename of the desktop user is pending (the wizard removes it when done)
-HOLD = [p for p in (os.environ.get("ACU_CONNECT_HOLD") or "/etc/xdg/autostart/piwiz.desktop").split(":") if p]
+# present while a rename of the desktop user is pending: rename-user writes it in both
+# boot modes, and cancel-rename (which the wizard and userconf end with) removes it
+HOLD = [p for p in (os.environ.get("ACU_CONNECT_HOLD") or "/etc/ssh/sshd_config.d/rename_user.conf").split(":") if p]
+# the user the first-boot wizard's session runs as; while it has processes, the rename is under way
+WIZARD = os.environ.get("ACU_CONNECT_WIZARD_USER") or "rpi-first-boot-wizard"
+PROC = os.environ.get("ACU_CONNECT_PROC") or "/proc"
 POLL = float(os.environ.get("ACU_CONNECT_POLL") or 10)          # seconds between checks while waiting
 FIRST_PAUSE = float(os.environ.get("ACU_CONNECT_PAUSE") or 5)   # after the client stops; doubles up to MAX_PAUSE
 GRACE = float(os.environ.get("ACU_CONNECT_GRACE") or 10)        # SIGTERM, then this long before SIGKILL
@@ -49,7 +57,7 @@ RESTART = "restart"     # run_client: the supervisor stopped the client itself (
 NOT_FOR_CLIENT = {"INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET", "SYSTEMD_EXEC_PID", "MANAGERPID",
                   "MAINPID", "WATCHDOG_PID", "WATCHDOG_USEC", "PYTHONUNBUFFERED"}
 
-stopping = threading.Event()
+stopping = False     # set by the signal handler: a plain flag, no locks (a handler must not take any)
 child = None
 
 
@@ -69,8 +77,39 @@ def link():
 
 
 def held():
-    """The marker of a pending first-boot rename of the desktop user, if one exists."""
+    """The marker of a pending rename of the desktop user, if one exists."""
     return next((path for path in HOLD if os.path.lexists(path)), None)
+
+
+def wizard_running():
+    """Whether the first-boot wizard's session is running (its user has processes)."""
+    try:
+        uid = pwd.getpwnam(WIZARD).pw_uid
+    except KeyError:
+        return False
+    try:
+        entries = os.scandir(PROC)
+    except OSError:
+        return False
+    with entries:
+        for entry in entries:
+            if entry.name.isdigit():
+                try:
+                    if entry.stat(follow_symlinks=False).st_uid == uid:
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def pause_for(seconds):
+    """Sleep, waking early when the service is stopped."""
+    deadline = time.monotonic() + seconds
+    while not stopping:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(left, 0.2))
 
 
 def account():
@@ -86,27 +125,37 @@ def switching():
 
 
 def prepare_dir(user):
-    """The link directory exists and belongs to the desktop user, who writes agent.json (signin)."""
+    """The link directory exists and belongs to the desktop user, who writes agent.json (signin).
+
+    Only /var/lib/acu-connect, or a directory this creates, is handed to that user: a
+    directory ACU_CONFIG_DIR names that already exists is left as it is. Returns a
+    problem to report, or None.
+    """
     if os.geteuid() != 0 or user is None:
-        return
+        return None
+    created = False
     try:
         os.mkdir(CONFIG_DIR, 0o700)
+        created = True
     except FileExistsError:
         pass
     except OSError as why:
-        log(f"cannot create {CONFIG_DIR}: {why}")
-        return
+        return f"cannot create {CONFIG_DIR}: {why}"
     try:
         st = os.lstat(CONFIG_DIR)
+        if stat.S_ISLNK(st.st_mode) and os.path.isdir(CONFIG_DIR):
+            return None          # moved elsewhere by the admin: theirs to look after
         if not stat.S_ISDIR(st.st_mode):
-            log(f"{CONFIG_DIR} is not a directory")
-            return
+            return f"{CONFIG_DIR} is not a directory"
+        if not created and os.path.abspath(CONFIG_DIR) != DEFAULT_DIR:
+            return None
         if (st.st_uid, st.st_gid) != (user.pw_uid, user.pw_gid):
             os.chown(CONFIG_DIR, user.pw_uid, user.pw_gid, follow_symlinks=False)
         if stat.S_IMODE(st.st_mode) != 0o700:
             os.chmod(CONFIG_DIR, 0o700, follow_symlinks=False)
     except (OSError, NotImplementedError) as why:
-        log(f"cannot give {CONFIG_DIR} to {user.pw_name}: {why}")
+        return f"cannot give {CONFIG_DIR} to {user.pw_name}: {why}"
+    return None
 
 
 def wayland_display(env):
@@ -145,6 +194,8 @@ def run_client(user, started_link):
         options = {"user": user.pw_uid, "group": user.pw_gid,
                    "extra_groups": os.getgrouplist(user.pw_name, user.pw_gid),
                    "cwd": user.pw_dir if os.path.isdir(user.pw_dir) else "/"}
+    if stopping:
+        return None
     try:
         child = subprocess.Popen([*CLIENT, "run"], env=client_env(user), **options)
     except (OSError, ValueError, subprocess.SubprocessError) as why:
@@ -156,20 +207,19 @@ def run_client(user, started_link):
         while True:
             try:
                 code = child.wait(timeout=TICK)
-                return None if stopping.is_set() else RESTART if reason else code
+                return None if stopping else RESTART if reason else code
             except subprocess.TimeoutExpired:
                 pass
             if reason is None:
                 now_link = link()
-                hold = held()
-                if stopping.is_set():
+                if stopping:
                     reason = "stopping"
                 elif now_link is None:
                     reason = "the link was removed (signout); stopping the client"
                 elif now_link != started_link:
                     reason = "the link changed (signin); restarting the client on the new link"
-                elif hold:
-                    reason = f"a rename of {user.pw_name} is pending ({hold}); stopping the client until it is done"
+                elif wizard_running():
+                    reason = f"the first-boot wizard is renaming {user.pw_name}; stopping the client until it is done"
                 if reason:
                     if reason != "stopping":
                         log(reason)
@@ -184,10 +234,14 @@ def run_client(user, started_link):
 
 
 def stop(_signum, _frame):
-    stopping.set()
+    global stopping
+    stopping = True
     running = child
-    if running is not None and running.poll() is None:
-        running.terminate()
+    if running is not None and running.returncode is None:
+        try:
+            running.send_signal(signal.SIGTERM)
+        except OSError:
+            pass
 
 
 def main():
@@ -195,15 +249,21 @@ def main():
     signal.signal(signal.SIGINT, stop)
     pause = FIRST_PAUSE
     waiting = None
-    while not stopping.is_set():
+    problem = None
+    while not stopping:
         user = account()
-        prepare_dir(user)
+        trouble = prepare_dir(user)
+        if trouble != problem:
+            if trouble:
+                log(trouble)
+            problem = trouble
         current = link()
         hold = held()
         if current is None:
             why = 'this device is not linked yet: run "acu-connect signin" and approve the code to link it'
-        elif hold:
-            why = f"waiting for the first-boot setup to finish renaming the desktop user ({hold} exists)"
+        elif hold or wizard_running():
+            why = ("waiting for the rename of the desktop user to be done or cancelled "
+                   f"({hold or 'the first-boot wizard is running'})")
         elif user is None:
             why = f"there is no user with uid {UID}; waiting for one"
         else:
@@ -212,29 +272,35 @@ def main():
             if why != waiting:
                 log(why)
                 waiting = why
-            stopping.wait(POLL)
+            pause_for(POLL)
             continue
         if waiting:
             log(f"linked; starting the client as {user.pw_name}")
             waiting = None
         started = time.monotonic()
         code = run_client(user, current)
-        if stopping.is_set() or code is None:
+        if stopping or code is None:
             break
         if code == RESTART:
             pause = FIRST_PAUSE
             continue
         if code == EXIT_REVOKED:
-            if link() == current:
-                set_aside()
-            else:
+            now = link()
+            if now is None:
+                continue                  # signed out meanwhile: wait for a new signin
+            if now != current:
                 log("the old link was revoked; a new one is in place")
-            pause = FIRST_PAUSE
-            continue
+                pause = FIRST_PAUSE
+                continue
+            set_aside()
+            if link() is None:
+                pause = FIRST_PAUSE
+                continue
+            # the link could not be set aside: do not start a revoked client over and over
         if time.monotonic() - started >= STEADY:
             pause = FIRST_PAUSE
         log(f"the client stopped (exit {code}); starting it again in {pause:g} s")
-        stopping.wait(pause)
+        pause_for(pause)
         pause = min(MAX_PAUSE, pause * 2)
     return 0
 

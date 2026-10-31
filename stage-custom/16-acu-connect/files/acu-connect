@@ -1,5 +1,5 @@
 #!/bin/sh
-# acu-connect: the Acu Connect client's command line (signin, status, signout, run).
+# acu-connect: the Acu Connect client's command line (signin, status, signout).
 # The client itself runs as acu-connect.service; this only manages the link.
 #
 # Always Genesis OS's own Python (/opt/acu-connect/python), never the system
@@ -7,39 +7,85 @@
 # (uid 1000) the client runs as, so root's commands run as that user too.
 set -e
 PYTHON=/opt/acu-connect/python/bin/python3
-# The ACU_* settings of /etc/default/acu-connect, read the way systemd's
-# EnvironmentFile reads them (NAME=value, one level of quotes), never run as shell.
-if [ -r /etc/default/acu-connect ]; then
+DEFAULTS=/etc/default/acu-connect
+# present while a rename of the desktop user is pending (see acu-connect-service)
+RENAME_PENDING=/etc/ssh/sshd_config.d/rename_user.conf
+RUNUSER=/usr/sbin/runuser
+DESKTOP_UID=1000
+
+# The settings in /etc/default/acu-connect, NAME=value lines read the way systemd's
+# EnvironmentFile reads the usual forms (blanks around the line and around =, one
+# pair of quotes, CRLF line ends), never run as shell. The command takes the
+# client's ACU_* settings and the proxy variables; the service takes every line.
+if [ -r "${DEFAULTS}" ]; then
+	cr="$(printf '\r')"
 	while IFS= read -r line || [ -n "${line}" ]; do
+		line="${line%"${cr}"}"
+		line="${line#"${line%%[![:space:]]*}"}"
 		case "${line}" in
-			ACU_*=*) ;;
+			"#"* | ";"* | "") continue ;;
+			*=*) ;;
 			*) continue ;;
 		esac
 		name="${line%%=*}"
-		case "${name}" in
-			*[!A-Za-z0-9_]*) continue ;;
-		esac
+		name="${name%"${name##*[![:space:]]}"}"
 		value="${line#*=}"
+		value="${value#"${value%%[![:space:]]*}"}"
+		value="${value%"${value##*[![:space:]]}"}"
 		case "${value}" in
 			\"*\") value="${value#\"}"; value="${value%\"}" ;;
 			\'*\') value="${value#\'}"; value="${value%\'}" ;;
 		esac
+		case "${name}" in
+			"" | [0-9]* | *[!A-Za-z0-9_]*) continue ;;
+			ACU_* | HTTPS_PROXY | https_proxy | HTTP_PROXY | http_proxy | ALL_PROXY | all_proxy | NO_PROXY | no_proxy) ;;
+			*) continue ;;
+		esac
 		export "${name}=${value}"
-	done < /etc/default/acu-connect
+	done < "${DEFAULTS}"
 fi
 export ACU_CONFIG_DIR="${ACU_CONFIG_DIR:-/var/lib/acu-connect}"
+
+# the command, found the way the client finds it (an --option takes the next word as its value)
+command=""
+value_next=""
+for arg in "$@"; do
+	if [ -n "${value_next}" ]; then
+		value_next=""
+		case "${arg}" in
+			--*) ;;
+			*) continue ;;
+		esac
+	fi
+	case "${arg}" in
+		--*) value_next=1 ;;
+		*) command="${arg}"; break ;;
+	esac
+done
+if [ "${command}" = run ] && [ "${ACU_CONNECT_MANUAL:-}" != 1 ]; then
+	echo "acu-connect: the client already runs as acu-connect.service (systemctl status acu-connect);" >&2
+	echo "acu-connect: a second one would not follow signin --force or signout. Ignore signin's \"acu-connect run\"." >&2
+	exit 1
+fi
+if { [ "${command}" = signin ] || [ "${command}" = run ]; } && [ -e "${RENAME_PENDING}" ]; then
+	echo "acu-connect: a rename of the desktop user is pending (first-boot wizard or rename-user);" >&2
+	echo "acu-connect: finish it, or cancel it with sudo cancel-rename USER, then link this box" >&2
+	exit 1
+fi
 if [ ! -x "${PYTHON}" ]; then
 	echo "acu-connect: ${PYTHON} is missing; reinstall Genesis OS's acu-connect" >&2
 	exit 1
 fi
 if [ "$(id -u)" = 0 ]; then
-	user="$(getent passwd 1000 | cut -d: -f1)"
-	if [ -n "${user}" ]; then
-		# the full path: root's PATH does not always have sbin (cron, env -i)
-		exec /usr/sbin/runuser -u "${user}" -- env ACU_CONFIG_DIR="${ACU_CONFIG_DIR}" "${PYTHON}" -I -m acu_connect "$@"
+	user="$(getent passwd "${DESKTOP_UID}" | cut -d: -f1)"
+	if [ -z "${user}" ]; then
+		echo "acu-connect: there is no desktop user (uid ${DESKTOP_UID}); the link must belong to that user" >&2
+		exit 1
 	fi
-elif [ "$(id -u)" != 1000 ] && [ ! -w "${ACU_CONFIG_DIR}" ]; then
-	echo "acu-connect: the link belongs to the desktop user (uid 1000): run this as that user or with sudo" >&2
+	# runuser by full path: root's PATH does not always have sbin (cron, env -i)
+	exec "${RUNUSER}" -u "${user}" -- env ACU_CONFIG_DIR="${ACU_CONFIG_DIR}" "${PYTHON}" -I -m acu_connect "$@"
+elif [ "$(id -u)" != "${DESKTOP_UID}" ] && [ ! -w "${ACU_CONFIG_DIR}" ]; then
+	echo "acu-connect: the link belongs to the desktop user (uid ${DESKTOP_UID}): run this as that user or with sudo" >&2
 	exit 1
 fi
 exec "${PYTHON}" -I -m acu_connect "$@"

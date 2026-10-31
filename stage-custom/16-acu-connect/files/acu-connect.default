@@ -1,9 +1,14 @@
 # Acu Connect client settings (acu-connect.service and the acu-connect command).
 # After a change: sudo systemctl restart acu-connect
-# NAME=value lines, read by systemd and by the acu-connect command (never run as shell).
+# NAME=value lines (never run as shell). The service reads every line; the
+# acu-connect command reads the ACU_* settings and the proxy variables.
 #
-# Server for "acu-connect signin" (a linked device keeps the server it was linked to)
+# Server for signin, status and signout. The running client always uses the server
+# the box was linked to, so change this before linking, not after.
 #ACU_SERVER=https://connect.acutrotech.com
+# a proxy, if the box reaches the internet only through one
+#HTTPS_PROXY=http://proxy.example:3128
+#NO_PROXY=localhost,127.0.0.1
 # 0: don't look up the approximate location (ipinfo.io)
 #ACU_NETWORK_LOCATION=0
 # desktop sharing: frames per second (1-30), JPEG quality (1-100), scale (e.g. 0.5)

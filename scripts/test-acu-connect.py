@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import pwd
+import re
 import shutil
 import signal
 import socket
@@ -33,6 +34,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVICE = os.path.join(HERE, "..", "stage-custom", "16-acu-connect", "files", "acu-connect-service")
+WRAPPER = os.path.join(HERE, "..", "stage-custom", "16-acu-connect", "files", "acu-connect")
 LOCK_TOOL = os.path.join(HERE, "acu-connect-lock.py")
 
 STUB = r'''#!/usr/bin/env python3
@@ -43,10 +45,6 @@ try:
     token = json.load(open(config))["deviceToken"]
 except (OSError, ValueError, KeyError):
     token = None
-with open(os.path.join(work, "calls.jsonl"), "a") as fh:
-    fh.write(json.dumps({"argv": sys.argv[1:], "wayland": os.environ.get("WAYLAND_DISPLAY"),
-                         "config": os.environ.get("ACU_CONFIG_DIR"), "token": token, "pid": os.getpid(),
-                         "uid": os.getuid(), "home": os.environ.get("HOME"), "env": sorted(os.environ)}) + "\n")
 plan = os.path.join(work, "plan")
 steps = open(plan).read().split() if os.path.exists(plan) else []
 step = steps.pop(0) if steps else "serve"
@@ -56,14 +54,21 @@ def ended(*_):
     with open(os.path.join(work, "terminated"), "a") as fh:
         fh.write(f"{token}\n")
     sys.exit(0)
+# signal handling first, so a test that sees the start below can stop the client at once
 if step == "serve":
     signal.signal(signal.SIGTERM, ended)
-    while True:
-        time.sleep(0.05)
-if step == "stubborn":            # ignores SIGTERM
+elif step == "stubborn":          # ignores SIGTERM
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open(os.path.join(work, "calls.jsonl"), "a") as fh:
+    fh.write(json.dumps({"argv": sys.argv[1:], "wayland": os.environ.get("WAYLAND_DISPLAY"),
+                         "config": os.environ.get("ACU_CONFIG_DIR"), "token": token, "pid": os.getpid(),
+                         "uid": os.getuid(), "home": os.environ.get("HOME"), "env": sorted(os.environ)}) + "\n")
+if step in ("serve", "stubborn"):
     while True:
         time.sleep(0.05)
+if step == "signout2":            # signout removed the link, and the server dropped the client
+    os.remove(config)
+    sys.exit(2)
 if step == "relink2":             # signin --force landed just as the old link was revoked
     tmp = config + ".tmp"
     with open(tmp, "w") as fh:
@@ -85,7 +90,10 @@ def wait_for(predicate, timeout=8.0):
 
 class Supervisor(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="acu-connect-test.")
+        # /tmp: short enough for an AF_UNIX path, and reachable by the uid the root test switches to
+        self.tmp = tempfile.mkdtemp(prefix="acu-connect-test.", dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.proc_dir = os.path.join(self.tmp, "proc")         # a stand-in /proc for the wizard check
+        os.makedirs(self.proc_dir)
         self.config = os.path.join(self.tmp, "state")
         os.makedirs(self.config)
         self.runtime = os.path.join(self.tmp, "runtime")
@@ -99,7 +107,10 @@ class Supervisor(unittest.TestCase):
 
     def tearDown(self):
         if self.proc and self.proc.poll() is None:
-            self.proc.kill()
+            try:   # the supervisor and any client it left behind
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             self.proc.wait()
         if self.out:
             self.out.close()
@@ -110,15 +121,26 @@ class Supervisor(unittest.TestCase):
             fh.write(plan)
         self.out = open(os.path.join(self.tmp, "out.log"), "w")
         self.proc = subprocess.Popen(
-            [sys.executable, "-I", SERVICE], stdout=self.out, stderr=subprocess.STDOUT,
+            [sys.executable, "-I", SERVICE], stdout=self.out, stderr=subprocess.STDOUT, start_new_session=True,
             env={**os.environ, "STUB_DIR": self.tmp, "ACU_CONNECT_CLIENT": f"{sys.executable} {self.stub}",
                  "ACU_CONFIG_DIR": self.config, "XDG_RUNTIME_DIR": self.runtime, "WAYLAND_DISPLAY": "wayland-0",
                  "ACU_CONNECT_POLL": "0.1", "ACU_CONNECT_PAUSE": "0.2", "ACU_CONNECT_GRACE": "1",
-                 "ACU_CONNECT_UID": str(os.getuid()), "ACU_CONNECT_HOLD": self.hold, **env})
+                 "ACU_CONNECT_UID": str(os.getuid()), "ACU_CONNECT_HOLD": self.hold,
+                 # the wizard's user is this user, its processes are what proc_dir lists
+                 "ACU_CONNECT_WIZARD_USER": pwd.getpwuid(os.getuid()).pw_name, "ACU_CONNECT_PROC": self.proc_dir,
+                 **env})
 
     @property
     def hold(self):
-        return os.path.join(self.tmp, "piwiz.desktop")
+        return os.path.join(self.tmp, "rename_user.conf")
+
+    def wizard(self, running=True):
+        """The first-boot wizard's session starts (a process of its user appears) or ends."""
+        path = os.path.join(self.proc_dir, "4242")
+        if running:
+            os.makedirs(path, exist_ok=True)
+        else:
+            os.rmdir(path)
 
     def link(self, token="t"):
         """What acu-connect signin does: the new agent.json replaces the old one in one step."""
@@ -256,27 +278,56 @@ class Supervisor(unittest.TestCase):
             self.assertEqual(json.load(fh)["deviceToken"], "new")
         self.stop()
 
-    def test_no_client_while_a_first_boot_rename_is_pending(self):
-        open(self.hold, "w").close()                             # Raspberry Pi's wizard is armed
+    def test_no_client_while_a_rename_is_pending(self):
+        open(self.hold, "w").close()                             # rename-user ran (first-boot wizard armed)
         self.link()
         self.start()
         time.sleep(0.8)
         self.assertEqual(self.calls(), [])                       # nothing runs as the desktop user
-        self.assertEqual(self.output().count("waiting for the first-boot setup"), 1)
-        os.remove(self.hold)                                     # the wizard finished (cancel-rename)
+        self.assertEqual(self.output().count("waiting for the rename of the desktop user"), 1)
+        os.remove(self.hold)                                     # done or cancelled (cancel-rename)
         self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
         self.stop()
 
-    def test_a_rename_armed_while_running_stops_the_client_until_it_is_done(self):
+    def test_rename_user_armed_from_a_remote_shell_does_not_cut_the_client(self):
         self.link()
         self.start()
         self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
-        open(self.hold, "w").close()                             # sudo rename-user
+        open(self.hold, "w").close()                             # sudo rename-user, typed in a remote shell
+        time.sleep(0.8)
+        self.assertEqual(self.terminated(), [])                  # rename-user can finish and reboot
+        self.assertEqual(len(self.calls()), 1)
+        self.stop()
+
+    def test_the_wizard_session_stops_the_client_until_it_is_done(self):
+        self.link()
+        self.start()
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        self.wizard()                                            # logged out: lightdm runs the wizard session
         self.assertTrue(wait_for(lambda: self.terminated() == ["t"]))
+        self.assertIn("first-boot wizard is renaming", self.output())
         time.sleep(0.5)
         self.assertEqual(len(self.calls()), 1)
-        os.remove(self.hold)
+        self.wizard(running=False)                               # the wizard finished
         self.assertTrue(wait_for(lambda: len(self.calls()) == 2))
+        self.stop()
+
+    def test_a_revoked_link_that_cannot_be_set_aside_is_not_restarted_in_a_loop(self):
+        os.makedirs(os.path.join(self.config, "agent.json.revoked", "x"))   # os.replace onto it fails
+        self.link()
+        self.start("2 2 2 2 2 2 2 2 2 2")
+        time.sleep(1.0)
+        self.assertLessEqual(len(self.calls()), 4)              # 0.2, 0.4, 0.8 s pauses, not a tight loop
+        self.assertIn("could not set the old link aside", self.output())
+        self.assertIn("starting it again in", self.output())
+        self.stop()
+
+    def test_a_revoke_after_a_signout_is_not_called_a_new_link(self):
+        self.link()
+        self.start("signout2")
+        self.assertTrue(wait_for(lambda: "not linked yet" in self.output()))
+        self.assertNotIn("a new one is in place", self.output())
+        self.assertFalse(os.path.exists(os.path.join(self.config, "agent.json.revoked")))
         self.stop()
 
     def test_a_client_that_ignores_sigterm_is_killed(self):
@@ -313,19 +364,126 @@ class Supervisor(unittest.TestCase):
         nobody = pwd.getpwnam("nobody")
         os.chmod(self.tmp, 0o777)
         os.chmod(self.stub, 0o755)
-        open(os.path.join(self.tmp, "calls.jsonl"), "w").close()
-        os.chmod(os.path.join(self.tmp, "calls.jsonl"), 0o666)
+        for name in ("calls.jsonl", "plan"):
+            open(os.path.join(self.tmp, name), "w").close()
+            os.chmod(os.path.join(self.tmp, name), 0o666)
+        os.rmdir(self.config)                                    # the supervisor creates it for the user
+        self.start(ACU_CONNECT_UID=str(nobody.pw_uid))
+        self.assertTrue(wait_for(lambda: os.path.isdir(self.config)))
+        st = os.stat(self.config)                                # the link directory is the user's
+        self.assertEqual((st.st_uid, oct(st.st_mode & 0o777)), (nobody.pw_uid, "0o700"))
         self.link()
         os.chmod(os.path.join(self.config, "agent.json"), 0o644)
-        self.start(ACU_CONNECT_UID=str(nobody.pw_uid))
-        os.chmod(os.path.join(self.tmp, "plan"), 0o666)
         self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
         call = self.calls()[0]
         self.assertEqual(call["uid"], nobody.pw_uid)
         self.assertEqual(call["home"], nobody.pw_dir)
-        st = os.stat(self.config)                                # the link directory is the user's
-        self.assertEqual((st.st_uid, oct(st.st_mode & 0o777)), (nobody.pw_uid, "0o700"))
         self.stop()
+
+    @unittest.skipUnless(os.geteuid() == 0, "needs root, as acu-connect.service runs")
+    def test_as_root_an_existing_directory_it_did_not_create_is_left_alone(self):
+        nobody = pwd.getpwnam("nobody")
+        os.chmod(self.config, 0o755)                             # say ACU_CONFIG_DIR=/opt/acu-connect
+        self.start(ACU_CONNECT_UID=str(nobody.pw_uid))
+        time.sleep(0.5)
+        st = os.stat(self.config)
+        self.assertEqual((st.st_uid, oct(st.st_mode & 0o777)), (0, "0o755"))
+        self.stop()
+
+
+class Command(unittest.TestCase):
+    """The acu-connect command (a sh script), with its paths pointed at stand-ins."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="acu-command-test.")
+        self.defaults = os.path.join(self.tmp, "default")
+        self.pending = os.path.join(self.tmp, "rename_user.conf")
+        python = os.path.join(self.tmp, "python3")
+        with open(python, "w") as fh:            # records what the client would get
+            fh.write(f'#!/bin/sh\nenv > "{self.tmp}/env"\nprintf "%s\\n" "$@" > "{self.tmp}/args"\n')
+        runuser = os.path.join(self.tmp, "runuser")
+        with open(runuser, "w") as fh:           # as root: runuser -u NAME -- COMMAND...
+            fh.write('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
+        os.chmod(python, 0o755)
+        os.chmod(runuser, 0o755)
+        with open(WRAPPER) as fh:
+            text = fh.read()
+        for name, value in (("PYTHON", python), ("DEFAULTS", self.defaults), ("RENAME_PENDING", self.pending),
+                            ("RUNUSER", runuser), ("DESKTOP_UID", str(os.getuid()))):
+            text, n = re.subn(rf"^{name}=.*$", f"{name}={value}", text, flags=re.M)
+            self.assertEqual(n, 1, name)
+        self.command = os.path.join(self.tmp, "acu-connect")
+        with open(self.command, "w") as fh:
+            fh.write(text)
+        os.chmod(self.command, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def run_command(self, *args, defaults=None, **env):
+        if defaults is not None:
+            with open(self.defaults, "w", newline="") as fh:
+                fh.write(defaults)
+        return subprocess.run(["sh", self.command, *args], capture_output=True, text=True, timeout=30,
+                              env={"PATH": "/usr/bin:/bin", "ACU_CONFIG_DIR": self.tmp, **env})
+
+    def client_env(self):
+        with open(os.path.join(self.tmp, "env")) as fh:
+            return dict(line.rstrip("\n").split("=", 1) for line in fh if "=" in line)
+
+    def client_args(self):
+        with open(os.path.join(self.tmp, "args")) as fh:
+            return fh.read().split("\n")[:-1]
+
+    def test_settings_are_read_as_systemd_reads_them_not_run(self):
+        result = self.run_command("status", defaults=(
+            "# a comment\n"
+            "#ACU_SERVER=https://commented.example\n"
+            "ACU_A=https://a.example  \n"              # trailing blanks
+            "ACU_B=https://b.example\r\n"             # CRLF
+            "ACU_C = https://c.example\n"              # blanks around =
+            "   ACU_D=https://d.example\n"             # indented
+            "ACU_E=\"https://e.example\" \n"           # quoted, then a blank
+            "ACU_F='grim -t jpeg -'\n"
+            "ACU_G=grim -t jpeg -\n"                   # inner blanks kept, as systemd does
+            "HTTPS_PROXY=http://proxy.example:3128\n"  # the command needs the proxy too
+            "PATH=/evil\n"
+            "ACU_BAD-NAME=x\n"
+            "touch /tmp/acu-should-not-exist\n"
+            "ACU_LAST=no-newline"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = self.client_env()
+        for name, want in (("ACU_A", "https://a.example"), ("ACU_B", "https://b.example"),
+                           ("ACU_C", "https://c.example"), ("ACU_D", "https://d.example"),
+                           ("ACU_E", "https://e.example"), ("ACU_F", "grim -t jpeg -"),
+                           ("ACU_G", "grim -t jpeg -"), ("HTTPS_PROXY", "http://proxy.example:3128"),
+                           ("ACU_LAST", "no-newline")):
+            self.assertEqual(env.get(name), want, name)
+        self.assertNotIn("ACU_SERVER", env)
+        self.assertNotIn("ACU_BAD-NAME", env)
+        self.assertNotIn("/evil", env["PATH"])
+        self.assertEqual(self.client_args(), ["-I", "-m", "acu_connect", "status"])
+
+    def test_run_is_refused_the_service_runs_the_client(self):
+        result = self.run_command("run")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already runs as acu-connect.service", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "args")))
+        self.assertEqual(self.run_command("run", ACU_CONNECT_MANUAL="1").returncode, 0)   # for debugging
+
+    def test_no_signin_while_a_rename_is_pending(self):
+        open(self.pending, "w").close()
+        for args in (["signin"], ["signin", "--force"], ["--name", "box", "signin"]):
+            result = self.run_command(*args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn("rename of the desktop user is pending", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "args")))
+        self.assertEqual(self.run_command("status").returncode, 0)        # looking is fine
+        self.assertEqual(self.run_command("signin", "--name", "run").returncode, 1)
+
+    def test_an_option_value_is_not_taken_for_the_command(self):
+        self.assertEqual(self.run_command("--name", "run", "status").returncode, 0)
+        self.assertEqual(self.client_args()[-3:], ["--name", "run", "status"])
 
 
 class LockRule(unittest.TestCase):

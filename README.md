@@ -306,10 +306,12 @@ there), stops it with the service, and holds it back while a rename is pending.
 `acu-connect.service` starts at every boot and restarts forever, with growing
 pauses if the client keeps stopping. It runs as root and starts the client as
 the desktop user (by uid 1000, whatever it is called now) once the box is
-linked; never while Raspberry Pi's first-boot wizard (or `rename-user`) still
-has to rename that user, since `usermod` refuses to rename a user with running
-processes and the wizard would leave the account half renamed. The client
-starts within seconds of the wizard finishing. The screen tools it uses (`grim`,
+linked; never while a rename of that user is pending (Raspberry Pi's
+first-boot wizard, or `sudo rename-user`, in desktop or console mode), since
+`usermod` refuses to rename a user with running processes and the wizard would
+leave the account half renamed. `rename-user` typed in a remote shell still
+runs to the end; after the reboot the wizard needs the box's own screen, and
+the client starts within seconds of it finishing. The screen tools it uses (`grim`,
 `ffmpeg`, `wtype`, `wlrctl`, `xdotool`, ...) are optional: if an upgrade
 removes one, desktop sharing loses that ability and the rest keeps working.
 
@@ -324,13 +326,15 @@ journalctl -u acu-connect -f
 ```
 
 `signin --force` (link again) and `signout` take effect at once: the service
-restarts the client on the new link, or stops it. When a box is removed from
+restarts the client on the new link, or stops it. Ignore signin's "Start the
+client with: acu-connect run": the service runs it, and the command refuses a
+second, unsupervised client. When a box is removed from
 the account, the service sets that link aside
 (`/var/lib/acu-connect/agent.json.revoked`) and waits for a new `signin`
 instead of stopping for good; a revoke of an old link never touches a newer
 one. Settings (server, frame rate, location lookup, input) go in
-`/etc/default/acu-connect` as `NAME=value` lines; then `sudo systemctl restart
-acu-connect`. On the box, `/opt/acu-connect/README.md` sums this up.
+`/etc/default/acu-connect` as `NAME=value` lines (a proxy too); then
+`sudo systemctl restart acu-connect`. On the box, `/opt/acu-connect/README.md` sums this up.
 
 **Updating the package.** Replace `files/acu-connect-raspberry-pi` with the
 new version, run `python3 scripts/acu-connect-lock.py` (it pins every

@@ -213,6 +213,10 @@ acu_connect() {
 	acheck "the service is a root supervisor (no User=)" test -z "$(grep '^User=' "${unit}")"
 	acheck "it starts after a userconf.txt rename" grep -q '^After=.*userconfig\.service' "${unit}"
 	acheck "the link directory belongs to uid 1000" test "$(stat -c '%u %a' "${ROOT}/var/lib/acu-connect" 2> /dev/null)" = "1000 700"
+	if [ "${FIRSTBOOT}" = 1 ]; then
+		# what the service holds the client for; first boot's userconf ends with cancel-rename
+		acheck "no rename left pending after first boot (the client is not held)" test ! -e "${ROOT}/etc/ssh/sshd_config.d/rename_user.conf"
+	fi
 	echo "  info  $(chroot "${ROOT}" "${py}" -I -c 'import sys, acu_connect; print("acu-connect", acu_connect.VERSION, "on Python", sys.version.split()[0])' 2>&1)"
 	# What an apt upgrade to another Python version, or removing python3, leaves: no system Python.
 	# Hidden in a private mount namespace, so nothing is changed outside it. Then the real
@@ -234,7 +238,9 @@ chroot "${root}" env -i PATH=/usr/bin:/bin ACU_CONFIG_DIR="${link}" /usr/bin/acu
 chroot --userspec=1000:1000 "${root}" env -i PATH=/usr/bin:/bin HOME=/tmp ACU_CONFIG_DIR="${link}" /usr/bin/acu-connect status 2>&1 | grep -q 'smoke-box' && echo "OK command as the desktop user"
 # the supervisor starts the real client as uid 1000; it tries the server, and stops with the service
 log="$(mktemp)"
-chroot "${root}" env ACU_CONFIG_DIR="${link}" ACU_CONNECT_HOLD=/nonexistent /usr/lib/acu-connect/acu-connect-service > "${log}" 2>&1 &
+# /proc here is the runner's: its daemons' uids say nothing about the image's wizard user
+nowiz=ACU_CONNECT_WIZARD_USER=no-such-user
+chroot "${root}" env ACU_CONFIG_DIR="${link}" ACU_CONNECT_HOLD=/nonexistent "${nowiz}" /usr/lib/acu-connect/acu-connect-service > "${log}" 2>&1 &
 sup=$!
 client=""
 for _ in $(seq 1 80); do
@@ -257,10 +263,10 @@ if [ -n "${client}" ] && ! kill -0 "${client}" 2> /dev/null; then echo "OK clien
 sed 's/^/LOG /' "${log}"
 # while a first-boot rename is pending, no uid-1000 process at all
 touch "${root}/tmp/acu-hold"
-chroot "${root}" env ACU_CONFIG_DIR="${link}" ACU_CONNECT_HOLD=/tmp/acu-hold /usr/lib/acu-connect/acu-connect-service > "${log}" 2>&1 &
+chroot "${root}" env ACU_CONFIG_DIR="${link}" ACU_CONNECT_HOLD=/tmp/acu-hold "${nowiz}" /usr/lib/acu-connect/acu-connect-service > "${log}" 2>&1 &
 sup=$!
 sleep 4
-grep -q 'waiting for the first-boot setup' "${log}" && ! pgrep -u 1000 -f 'acu_connect run' > /dev/null && echo "OK held while a rename is pending"
+grep -q 'waiting for the rename of the desktop user' "${log}" && ! pgrep -u 1000 -f 'acu_connect run' > /dev/null && echo "OK held while a rename is pending"
 kill -TERM "${sup}" 2> /dev/null
 wait "${sup}" 2> /dev/null
 rm -f "${log}"

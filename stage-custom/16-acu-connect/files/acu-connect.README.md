@@ -13,15 +13,21 @@ here except for what the client does.
 
 - `acu-connect.service` (a system service) starts at every boot and runs the
   client as the desktop user (uid 1000, whatever it is called now) once the box
-  is linked. Until then it waits and says so once in the journal. It does not
-  start the client while Raspberry Pi's first-boot wizard still has to rename
-  that user; it starts within seconds of the wizard finishing.
+  is linked. Until then it waits and says so once in the journal. Ignore
+  signin's "Start the client with: acu-connect run": the service does that, and
+  the command refuses `run`.
+- While a rename of that user is pending (Raspberry Pi's first-boot wizard, or
+  `sudo rename-user`) the client does not start, and `signin` is refused:
+  `usermod` cannot rename a user that has running processes. `rename-user`
+  typed in a remote shell runs to the end; after the reboot the wizard needs
+  the box's own screen, and remote access is back within seconds of it
+  finishing (or of `sudo cancel-rename USER`).
 - `signin --force` (link again) and `signout` take effect at once: the service
   restarts or stops the client by itself.
 - When the box is removed from the account, the link is kept as
   `/var/lib/acu-connect/agent.json.revoked` and the service waits for a new
   `signin`.
-- Settings: `/etc/default/acu-connect` (NAME=value lines), then
-  `sudo systemctl restart acu-connect`.
+- Settings: `/etc/default/acu-connect` (NAME=value lines; a proxy goes there
+  too), then `sudo systemctl restart acu-connect`.
 - The client runs on its own Python in `/opt/acu-connect/python`, never the
   system `python3`, so upgrades of Debian's Python do not affect it.
