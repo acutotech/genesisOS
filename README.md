@@ -550,6 +550,14 @@ imager/                         Genesis Imager (genesis_imager.py) and its tests
   exists" means run `make clean` (or `--continue`) first. In CI the full pi-gen output
   is in the job log (grouped per stage) and `build.log` is uploaded as the
   `build-log` artifact.
+* **"Artifact storage quota has been hit" in CI:** a private repository's
+  artifacts count against the account's Actions storage (public ones are free),
+  and each image artifact is about 2 GB, more than the 500 MB a free plan
+  includes. Delete old artifacts (the run page, *Artifacts*, the bin icon; the
+  usage figure catches up within 6 to 12 hours) or set an Actions spending
+  budget above $0 under the organisation's *Billing*. Screenshot and log
+  uploads do not fail the build; the image and the Genesis Imager apps do, since
+  they are what the build is for.
 * **"No space left on device" in CI:** the workflow already removes unneeded
   runner tooling before the build (its log prints free space before and
   after). Drop packages, or do not build the Desktop stages.

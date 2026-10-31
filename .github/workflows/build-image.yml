@@ -98,6 +98,9 @@ jobs:
 
       - name: Upload screenshots
         if: always()
+        # Diagnostics (the contact sheet is in the log above as well): a full
+        # artifact storage quota must not stop the image build that needs this job.
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: genesis-shell-preview
@@ -189,7 +192,7 @@ jobs:
           name: genesis-imager-${{ matrix.name }}
           path: out/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
   imager-build-linux:
     name: Genesis Imager app (linux-x86_64)
@@ -231,7 +234,7 @@ jobs:
           name: genesis-imager-linux-x86_64
           path: out/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
   build:
     name: Build image
     needs: [lint, shell-preview, imager-test]
@@ -423,6 +426,7 @@ jobs:
 
       - name: Upload smoke-test screenshots
         if: always() && steps.build.outcome == 'success'
+        continue-on-error: true   # diagnostics; the smoke step itself is the gate
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: genesis-image-smoke
@@ -437,12 +441,15 @@ jobs:
           name: ${{ steps.cfg.outputs.img_name }}
           path: pi-gen/deploy/
           if-no-files-found: error
-          retention-days: 14
+          # About 2 GB per image, counted against the account's artifact storage
+          # in a private repository; tagged releases keep their own copy.
+          retention-days: 7
           # The image is already xz/zip compressed.
           compression-level: 0
 
       - name: Upload build log on failure
         if: failure()
+        continue-on-error: true   # the job is failing already; the log is in the job output too
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-log
