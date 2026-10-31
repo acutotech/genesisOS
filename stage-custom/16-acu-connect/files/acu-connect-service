@@ -11,8 +11,9 @@ waits for a new signin, so the service never ends up stopped for good.
 The service itself runs as root and starts the client as the desktop user (uid
 1000, whatever its name is now) only while that is safe:
   - not while a rename of that user is pending (Raspberry Pi's first-boot wizard
-    or rename-user, desktop or console: rename_user.conf exists until the rename
-    is done or cancelled): usermod cannot rename a user that has running
+    or rename-user, desktop or console: rename_user.conf and the enabled
+    userconfig.service exist until the rename is done or cancelled), nor while
+    the wizard's session runs: usermod cannot rename a user that has running
     processes, and the wizard would leave the account half renamed. A client
     that is already running is stopped only when the wizard session itself
     starts, not when rename-user arms it: rename-user may be running in one of
@@ -39,9 +40,11 @@ CONFIG = os.path.join(CONFIG_DIR, "agent.json")
 # Tests point these at stand-ins; the image runs the client on this interpreter as uid 1000.
 CLIENT = os.environ.get("ACU_CONNECT_CLIENT", "").split() or [sys.executable, "-I", "-m", "acu_connect"]
 UID = int(os.environ.get("ACU_CONNECT_UID") or 1000)
-# present while a rename of the desktop user is pending: rename-user writes it in both
-# boot modes, and cancel-rename (which the wizard and userconf end with) removes it
-HOLD = [p for p in (os.environ.get("ACU_CONNECT_HOLD") or "/etc/ssh/sshd_config.d/rename_user.conf").split(":") if p]
+# present while a rename of the desktop user is pending: rename-user creates both in either
+# boot mode, and cancel-rename (which the wizard and userconf end with) removes both. The
+# second one does not need openssh-server (whose sshd_config.d the first one lives in).
+RENAME_MARKERS = "/etc/ssh/sshd_config.d/rename_user.conf:/etc/systemd/system/multi-user.target.wants/userconfig.service"
+HOLD = [p for p in (os.environ.get("ACU_CONNECT_HOLD") or RENAME_MARKERS).split(":") if p]
 # the user the first-boot wizard's session runs as; while it has processes, the rename is under way
 WIZARD = os.environ.get("ACU_CONNECT_WIZARD_USER") or "rpi-first-boot-wizard"
 PROC = os.environ.get("ACU_CONNECT_PROC") or "/proc"
@@ -261,9 +264,11 @@ def main():
         hold = held()
         if current is None:
             why = 'this device is not linked yet: run "acu-connect signin" and approve the code to link it'
-        elif hold or wizard_running():
-            why = ("waiting for the rename of the desktop user to be done or cancelled "
-                   f"({hold or 'the first-boot wizard is running'})")
+        elif hold:
+            why = f"waiting for the rename of the desktop user to be done or cancelled ({hold} exists)"
+        elif wizard_running():
+            # cancel-rename does not end the wizard's session, and that wizard can still rename
+            why = "the first-boot wizard's session is still running; reboot (or restart lightdm) to end it"
         elif user is None:
             why = f"there is no user with uid {UID}; waiting for one"
         else:

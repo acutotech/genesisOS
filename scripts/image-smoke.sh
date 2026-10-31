@@ -215,7 +215,8 @@ acu_connect() {
 	acheck "the link directory belongs to uid 1000" test "$(stat -c '%u %a' "${ROOT}/var/lib/acu-connect" 2> /dev/null)" = "1000 700"
 	if [ "${FIRSTBOOT}" = 1 ]; then
 		# what the service holds the client for; first boot's userconf ends with cancel-rename
-		acheck "no rename left pending after first boot (the client is not held)" test ! -e "${ROOT}/etc/ssh/sshd_config.d/rename_user.conf"
+		acheck "no rename left pending after first boot (the client is not held)" \
+			test ! -e "${ROOT}/etc/ssh/sshd_config.d/rename_user.conf" -a ! -e "${ROOT}/etc/systemd/system/multi-user.target.wants/userconfig.service"
 	fi
 	echo "  info  $(chroot "${ROOT}" "${py}" -I -c 'import sys, acu_connect; print("acu-connect", acu_connect.VERSION, "on Python", sys.version.split()[0])' 2>&1)"
 	# What an apt upgrade to another Python version, or removing python3, leaves: no system Python.

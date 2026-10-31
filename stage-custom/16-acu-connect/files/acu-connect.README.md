@@ -21,7 +21,8 @@ here except for what the client does.
   `usermod` cannot rename a user that has running processes. `rename-user`
   typed in a remote shell runs to the end; after the reboot the wizard needs
   the box's own screen, and remote access is back within seconds of it
-  finishing (or of `sudo cancel-rename USER`).
+  finishing. To cancel it instead (over SSH): `sudo cancel-rename USER`, then
+  reboot, since the wizard on the screen keeps running until then.
 - `signin --force` (link again) and `signout` take effect at once: the service
   restarts or stops the client by itself.
 - When the box is removed from the account, the link is kept as

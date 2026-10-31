@@ -305,8 +305,9 @@ assert_grep '^PYTHON=/opt/acu-connect/python/bin/python3$' "${ROOTFS_DIR}/usr/bi
 assert_grep '^RUNUSER=/usr/sbin/runuser$' "${ROOTFS_DIR}/usr/bin/acu-connect"
 assert_grep 'exec "\$\{RUNUSER\}" -u ' "${ROOTFS_DIR}/usr/bin/acu-connect"
 # the command and the service agree on what marks a pending rename of the desktop user
-assert_grep '^RENAME_PENDING=/etc/ssh/sshd_config.d/rename_user.conf$' "${ROOTFS_DIR}/usr/bin/acu-connect"
-assert_grep '"/etc/ssh/sshd_config.d/rename_user.conf"' "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
+MARKERS='/etc/ssh/sshd_config.d/rename_user.conf.?/etc/systemd/system/multi-user.target.wants/userconfig.service'
+assert_grep "^RENAME_PENDING=\"${MARKERS}\"$" "${ROOTFS_DIR}/usr/bin/acu-connect"
+assert_grep "^RENAME_MARKERS = \"${MARKERS}\"$" "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
 assert_no_grep '^[[:space:]]*\. /etc/default/acu-connect' "${ROOTFS_DIR}/usr/bin/acu-connect"
 ACUUNIT="${ROOTFS_DIR}/usr/lib/systemd/system/acu-connect.service"
 # root supervisor: a uid-1000 process from boot would block the first-boot wizard's rename

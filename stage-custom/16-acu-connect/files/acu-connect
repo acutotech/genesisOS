@@ -8,8 +8,8 @@
 set -e
 PYTHON=/opt/acu-connect/python/bin/python3
 DEFAULTS=/etc/default/acu-connect
-# present while a rename of the desktop user is pending (see acu-connect-service)
-RENAME_PENDING=/etc/ssh/sshd_config.d/rename_user.conf
+# present while a rename of the desktop user is pending (the same as acu-connect-service)
+RENAME_PENDING="/etc/ssh/sshd_config.d/rename_user.conf /etc/systemd/system/multi-user.target.wants/userconfig.service"
 RUNUSER=/usr/sbin/runuser
 DESKTOP_UID=1000
 
@@ -67,10 +67,14 @@ if [ "${command}" = run ] && [ "${ACU_CONNECT_MANUAL:-}" != 1 ]; then
 	echo "acu-connect: a second one would not follow signin --force or signout. Ignore signin's \"acu-connect run\"." >&2
 	exit 1
 fi
-if { [ "${command}" = signin ] || [ "${command}" = run ]; } && [ -e "${RENAME_PENDING}" ]; then
-	echo "acu-connect: a rename of the desktop user is pending (first-boot wizard or rename-user);" >&2
-	echo "acu-connect: finish it, or cancel it with sudo cancel-rename USER, then link this box" >&2
-	exit 1
+if [ "${command}" = signin ] || [ "${command}" = run ]; then
+	for marker in ${RENAME_PENDING}; do
+		if [ -e "${marker}" ]; then
+			echo "acu-connect: a rename of the desktop user is pending (first-boot wizard or rename-user);" >&2
+			echo "acu-connect: finish it, or cancel it (sudo cancel-rename USER, then reboot), then link this box" >&2
+			exit 1
+		fi
+	done
 fi
 if [ ! -x "${PYTHON}" ]; then
 	echo "acu-connect: ${PYTHON} is missing; reinstall Genesis OS's acu-connect" >&2
@@ -78,12 +82,15 @@ if [ ! -x "${PYTHON}" ]; then
 fi
 if [ "$(id -u)" = 0 ]; then
 	user="$(getent passwd "${DESKTOP_UID}" | cut -d: -f1)"
-	if [ -z "${user}" ]; then
+	if [ -n "${user}" ]; then
+		# runuser by full path: root's PATH does not always have sbin (cron, env -i)
+		exec "${RUNUSER}" -u "${user}" -- env ACU_CONFIG_DIR="${ACU_CONFIG_DIR}" "${PYTHON}" -I -m acu_connect "$@"
+	fi
+	# no desktop user: looking at the link and removing it are fine as root, a new one is not
+	if [ "${command}" = signin ] || [ "${command}" = run ]; then
 		echo "acu-connect: there is no desktop user (uid ${DESKTOP_UID}); the link must belong to that user" >&2
 		exit 1
 	fi
-	# runuser by full path: root's PATH does not always have sbin (cron, env -i)
-	exec "${RUNUSER}" -u "${user}" -- env ACU_CONFIG_DIR="${ACU_CONFIG_DIR}" "${PYTHON}" -I -m acu_connect "$@"
 elif [ "$(id -u)" != "${DESKTOP_UID}" ] && [ ! -w "${ACU_CONFIG_DIR}" ]; then
 	echo "acu-connect: the link belongs to the desktop user (uid ${DESKTOP_UID}): run this as that user or with sudo" >&2
 	exit 1

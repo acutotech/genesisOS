@@ -311,7 +311,8 @@ first-boot wizard, or `sudo rename-user`, in desktop or console mode), since
 `usermod` refuses to rename a user with running processes and the wizard would
 leave the account half renamed. `rename-user` typed in a remote shell still
 runs to the end; after the reboot the wizard needs the box's own screen, and
-the client starts within seconds of it finishing. The screen tools it uses (`grim`,
+the client starts within seconds of it finishing (or after `sudo cancel-rename
+USER` and a reboot). The screen tools it uses (`grim`,
 `ffmpeg`, `wtype`, `wlrctl`, `xdotool`, ...) are optional: if an upgrade
 removes one, desktop sharing loses that ability and the rest keeps working.
 

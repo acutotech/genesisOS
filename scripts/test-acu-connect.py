@@ -79,6 +79,21 @@ sys.exit(int(step))
 '''
 
 
+def reachable_by_others(path):
+    """Whether another user (the root tests switch to nobody) can run this file."""
+    path = os.path.realpath(path)
+    parent = os.path.dirname(path)
+    while parent != os.path.dirname(parent):
+        if not os.stat(parent).st_mode & 0o001:
+            return False
+        parent = os.path.dirname(parent)
+    return os.stat(path).st_mode & 0o005 == 0o005
+
+
+ROOT_ONLY = "needs root, as acu-connect.service runs"
+NOT_REACHABLE = "this Python is not reachable by nobody"
+
+
 def wait_for(predicate, timeout=8.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -107,11 +122,13 @@ class Supervisor(unittest.TestCase):
 
     def tearDown(self):
         if self.proc and self.proc.poll() is None:
-            try:   # the supervisor and any client it left behind
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            self.proc.kill()
             self.proc.wait()
+        for call in self.calls():   # any client a failed test (or a dead supervisor) left behind
+            try:
+                os.kill(call["pid"], signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         if self.out:
             self.out.close()
         shutil.rmtree(self.tmp)
@@ -121,7 +138,7 @@ class Supervisor(unittest.TestCase):
             fh.write(plan)
         self.out = open(os.path.join(self.tmp, "out.log"), "w")
         self.proc = subprocess.Popen(
-            [sys.executable, "-I", SERVICE], stdout=self.out, stderr=subprocess.STDOUT, start_new_session=True,
+            [sys.executable, "-I", SERVICE], stdout=self.out, stderr=subprocess.STDOUT,
             env={**os.environ, "STUB_DIR": self.tmp, "ACU_CONNECT_CLIENT": f"{sys.executable} {self.stub}",
                  "ACU_CONFIG_DIR": self.config, "XDG_RUNTIME_DIR": self.runtime, "WAYLAND_DISPLAY": "wayland-0",
                  "ACU_CONNECT_POLL": "0.1", "ACU_CONNECT_PAUSE": "0.2", "ACU_CONNECT_GRACE": "1",
@@ -359,8 +376,41 @@ class Supervisor(unittest.TestCase):
         self.assertIn("ACU_SERVER", env)                         # the client's own settings pass through
         self.stop()
 
-    @unittest.skipUnless(os.geteuid() == 0, "needs root, as acu-connect.service runs")
+    def test_either_rename_marker_holds_the_client(self):
+        enabled = os.path.join(self.tmp, "userconfig.service")   # rename-user enabled userconfig
+        open(enabled, "w").close()
+        self.link()
+        self.start(ACU_CONNECT_HOLD=f"{self.hold}:{enabled}")
+        time.sleep(0.6)
+        self.assertEqual(self.calls(), [])
+        self.assertIn(f"({enabled} exists)", self.output())
+        os.remove(enabled)
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        self.stop()
+
+    def test_after_cancel_rename_the_wizard_still_on_screen_holds_until_a_reboot(self):
+        self.wizard()                                            # cancel-rename does not end its session
+        self.link()
+        self.start()
+        time.sleep(0.6)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("reboot (or restart lightdm) to end it", self.output())
+        self.wizard(running=False)                               # rebooted
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        self.stop()
+
+    @unittest.skipUnless(os.geteuid() == 0, ROOT_ONLY)
+    def test_as_root_a_directory_problem_is_logged_once(self):
+        missing = os.path.join(self.tmp, "no-such-parent", "state")
+        self.start(ACU_CONFIG_DIR=missing)
+        time.sleep(0.8)                                          # several POLLs
+        self.assertEqual(self.output().count(f"cannot create {missing}"), 1)
+        self.stop()
+
+    @unittest.skipUnless(os.geteuid() == 0, ROOT_ONLY)
     def test_as_root_the_client_runs_as_the_desktop_user(self):
+        if not reachable_by_others(sys.executable):
+            self.skipTest(NOT_REACHABLE)
         nobody = pwd.getpwnam("nobody")
         os.chmod(self.tmp, 0o777)
         os.chmod(self.stub, 0o755)
@@ -369,9 +419,9 @@ class Supervisor(unittest.TestCase):
             os.chmod(os.path.join(self.tmp, name), 0o666)
         os.rmdir(self.config)                                    # the supervisor creates it for the user
         self.start(ACU_CONNECT_UID=str(nobody.pw_uid))
-        self.assertTrue(wait_for(lambda: os.path.isdir(self.config)))
-        st = os.stat(self.config)                                # the link directory is the user's
-        self.assertEqual((st.st_uid, oct(st.st_mode & 0o777)), (nobody.pw_uid, "0o700"))
+        # created, then handed to the user (two steps: wait for the second)
+        self.assertTrue(wait_for(lambda: os.path.isdir(self.config) and os.stat(self.config).st_uid == nobody.pw_uid))
+        self.assertEqual(oct(os.stat(self.config).st_mode & 0o777), "0o700")
         self.link()
         os.chmod(os.path.join(self.config, "agent.json"), 0o644)
         self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
@@ -380,7 +430,7 @@ class Supervisor(unittest.TestCase):
         self.assertEqual(call["home"], nobody.pw_dir)
         self.stop()
 
-    @unittest.skipUnless(os.geteuid() == 0, "needs root, as acu-connect.service runs")
+    @unittest.skipUnless(os.geteuid() == 0, ROOT_ONLY)
     def test_as_root_an_existing_directory_it_did_not_create_is_left_alone(self):
         nobody = pwd.getpwnam("nobody")
         os.chmod(self.config, 0o755)                             # say ACU_CONFIG_DIR=/opt/acu-connect
@@ -395,24 +445,30 @@ class Command(unittest.TestCase):
     """The acu-connect command (a sh script), with its paths pointed at stand-ins."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="acu-command-test.")
+        self.tmp = tempfile.mkdtemp(prefix="acu-command-test.", dir="/tmp" if os.path.isdir("/tmp") else None)
         self.defaults = os.path.join(self.tmp, "default")
         self.pending = os.path.join(self.tmp, "rename_user.conf")
+        self.enabled = os.path.join(self.tmp, "userconfig.service")
         python = os.path.join(self.tmp, "python3")
         with open(python, "w") as fh:            # records what the client would get
             fh.write(f'#!/bin/sh\nenv > "{self.tmp}/env"\nprintf "%s\\n" "$@" > "{self.tmp}/args"\n')
         runuser = os.path.join(self.tmp, "runuser")
         with open(runuser, "w") as fh:           # as root: runuser -u NAME -- COMMAND...
-            fh.write('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
+            fh.write(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{self.tmp}/runuser.args"\n'
+                     'while [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
         os.chmod(python, 0o755)
         os.chmod(runuser, 0o755)
+        self.paths = {"PYTHON": python, "DEFAULTS": self.defaults, "RENAME_PENDING": f'"{self.pending} {self.enabled}"',
+                      "RUNUSER": runuser}
+        self.command = os.path.join(self.tmp, "acu-connect")
+        self.build(os.getuid())
+
+    def build(self, desktop_uid):
         with open(WRAPPER) as fh:
             text = fh.read()
-        for name, value in (("PYTHON", python), ("DEFAULTS", self.defaults), ("RENAME_PENDING", self.pending),
-                            ("RUNUSER", runuser), ("DESKTOP_UID", str(os.getuid()))):
-            text, n = re.subn(rf"^{name}=.*$", f"{name}={value}", text, flags=re.M)
+        for name, value in (*self.paths.items(), ("DESKTOP_UID", str(desktop_uid))):
+            text, n = re.subn(rf"^{name}=.*$", lambda _m: f"{name}={value}", text, flags=re.M)
             self.assertEqual(n, 1, name)
-        self.command = os.path.join(self.tmp, "acu-connect")
         with open(self.command, "w") as fh:
             fh.write(text)
         os.chmod(self.command, 0o755)
@@ -480,6 +536,40 @@ class Command(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "args")))
         self.assertEqual(self.run_command("status").returncode, 0)        # looking is fine
         self.assertEqual(self.run_command("signin", "--name", "run").returncode, 1)
+
+    def test_no_signin_while_userconfig_is_enabled_for_a_rename(self):
+        open(self.enabled, "w").close()                          # rename-user without openssh-server
+        result = self.run_command("signin")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("then reboot", result.stderr)
+
+    @unittest.skipUnless(os.geteuid() == 0, ROOT_ONLY)
+    def test_as_root_the_command_runs_as_the_desktop_user(self):
+        nobody = pwd.getpwnam("nobody")
+        self.build(nobody.pw_uid)
+        self.assertEqual(self.run_command("status").returncode, 0)
+        with open(os.path.join(self.tmp, "runuser.args")) as fh:
+            self.assertEqual(fh.read().split("\n")[:3], ["-u", "nobody", "--"])
+        self.assertEqual(self.client_args()[-1], "status")
+
+    @unittest.skipUnless(os.geteuid() == 0, ROOT_ONLY)
+    def test_as_root_without_a_desktop_user_the_link_can_be_seen_and_removed_not_made(self):
+        uid = 4242424
+        while True:
+            try:
+                pwd.getpwuid(uid)
+                uid += 1
+            except KeyError:
+                break
+        self.build(uid)
+        result = self.run_command("signin")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("there is no desktop user", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "args")))
+        for command in ("status", "signout"):
+            self.assertEqual(self.run_command(command).returncode, 0, command)
+            self.assertEqual(self.client_args()[-1], command)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "runuser.args")))   # ran as root
 
     def test_an_option_value_is_not_taken_for_the_command(self):
         self.assertEqual(self.run_command("--name", "run", "status").returncode, 0)
