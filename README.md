@@ -33,6 +33,7 @@ of the desktop that CI took inside the image before publishing it.
 | Interfaces | I2C, SPI, serial port (UART on GPIO 14/15, Pi 5 `uart0`), SSH, VNC (wayvnc) on; serial console and 1-Wire off | `ENABLE_*` in `custom.conf` |
 | Settings | **Genesis Settings** (interfaces, system, appearance, connectivity, display and sound, software, about) plus Raspberry Pi Configuration | `stage-custom/12-genesis-settings` |
 | Behaviour | persistent journal, automatic security updates, cloud-init seed files on the boot partition, screen blanks after 10 minutes | `custom.conf` |
+| Remote access | **Acu Connect** client (shell and desktop from connect.acutrotech.com), on its own Python; starts at boot and waits until the box is linked with `acu-connect signin` | `ACU_CONNECT`, `ACU_CONNECT_SERVER` in `custom.conf`; `stage-custom/16-acu-connect` |
 
 Why these choices, in two sentences each:
 
@@ -285,6 +286,47 @@ application windows.
   runs it on a trixie container before building and inside the finished
   image after building.
 
+## Acu Connect client
+
+Acutro Technologies' client for remote shell and desktop access from
+[connect.acutrotech.com](https://connect.acutrotech.com) is built into the
+image (`stage-custom/16-acu-connect`; the package itself is kept unchanged in
+`files/acu-connect-raspberry-pi`). It is proprietary: keep this repository
+and its images private, or have Acutro's written permission.
+
+**It keeps running whatever the system does.** It runs on its own CPython
+(python-build-standalone 3.14, `/opt/acu-connect/python`) with its packages
+installed from a hash-pinned lock file, never on the system `python3` or
+Debian's `python3-*` packages. So an `apt upgrade`, a new Debian Python
+version, or removing `python3` altogether does not touch it; the image build
+checks exactly that by hiding the system Python and starting the client.
+`acu-connect.service` starts it at every boot as the desktop user (by uid
+1000, which Genesis Imager's first-boot rename keeps) and restarts it forever,
+with growing pauses if it keeps stopping. The screen tools it uses (`grim`,
+`ffmpeg`, `wtype`, `wlrctl`, `xdotool`, ...) are optional: if an upgrade
+removes one, desktop sharing loses that ability and the rest keeps working.
+
+**Linking a box.** A new box is not linked. The service waits (it logs that
+once) until someone runs, as the desktop user or with `sudo`:
+
+```sh
+acu-connect signin      # prints a link and an 8-character code; approve it in the dashboard
+acu-connect status      # linked? server reachable?
+acu-connect signout     # unlink
+journalctl -u acu-connect -f
+```
+
+When a box is removed from the account, the service sets the old link aside
+(`/var/lib/acu-connect/agent.json.revoked`) and waits for a new `signin`
+instead of stopping for good. Settings (server, frame rate, location lookup,
+input) go in `/etc/default/acu-connect`; then `sudo systemctl restart
+acu-connect`.
+
+**Updating the package.** Replace `files/acu-connect-raspberry-pi` with the
+new version, run `python3 scripts/acu-connect-lock.py` (it pins every
+requirement by hash and checks each has an arm64 wheel for the bundled
+Python), then `make test`.
+
 ## Customising the image
 
 Everything you change lives in `config` and `stage-custom/`. The dry-run
@@ -316,6 +358,7 @@ know, so nothing can apply to one build path only. Keep secrets out of it.
 | `PERSISTENT_JOURNAL`, `JOURNAL_MAX_USE` | journald storage |
 | `ENABLE_UNATTENDED_UPGRADES` | automatic updates from Debian security and the Raspberry Pi archive |
 | `ENABLE_SERVICES`, `DISABLE_SERVICES` | systemd units to `enable` / `disable` in the image |
+| `ACU_CONNECT`, `ACU_CONNECT_SERVER` | Acu Connect client installed (`1`) or not; the server `acu-connect signin` links to |
 
 Every knob can also be set as an environment variable for a local build
 (`ENABLE_I2C=1 make build`). Secrets go in `stage-custom/secrets.env`
@@ -417,12 +460,15 @@ make test    # dry-run of stage-custom against a fake root filesystem, plus unit
 
 The dry-run executes every `*-run.sh` with pi-gen's variables set, captures
 and syntax-checks the `on_chroot` scripts instead of running them, and
-asserts on the produced files in five scenarios (defaults, Wi-Fi with awkward
-characters, idempotence, invalid input, cloud-init disabled). It cannot tell
+asserts on the produced files in seven scenarios (defaults, Wi-Fi with awkward
+characters, idempotence, invalid input, cloud-init disabled, a refused user
+Python, Acu Connect off). It cannot tell
 you whether a package name exists in trixie or whether the image boots; the
 CI build and a real device do that. `make test` also runs
 `scripts/test-shell-logic.py` (I2C scan parsing, sensor debounce and
-notification texts, desktop label contrast) and the Genesis Imager tests.
+notification texts, desktop label contrast), `scripts/test-acu-connect.py`
+(the Acu Connect service: waiting for a link, restarts, a removed device) and
+the Genesis Imager tests.
 
 ## Repository layout
 
@@ -450,6 +496,8 @@ stage-custom/
   12-genesis-settings/          Genesis Settings app and its privileged helper
   13-system-defaults/           interfaces, VNC, browser, autologin, default session, splash flags
   14-first-boot/                genesis-firstboot.service and the setup-area placeholder on the boot partition
+  16-acu-connect/               Acu Connect client (files/acu-connect-raspberry-pi, unchanged) on its own
+                                Python, its service, requirements.lock (scripts/acu-connect-lock.py)
   90-services/                  enable/disable systemd units (runs last)
   secrets.env.example           template for secrets.env
 branding/src/                   the logo and wallpaper the assets are generated from

@@ -1,0 +1,22 @@
+# systemd *user* unit for the Acu Connect client.
+# It runs as the desktop user so screen sharing can reach the Wayland/X11 session.
+# Installed by install.sh to ~/.config/systemd/user/acu-connect.service
+
+[Unit]
+Description=Acu Connect client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/acu-connect run
+Restart=always
+RestartSec=5
+# Exit code 2 means the device was removed from the account: don't loop.
+RestartPreventExitStatus=2
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=DISPLAY=:0
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

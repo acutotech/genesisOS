@@ -115,6 +115,7 @@ reset_knobs() {
 	unset ENABLE_SERIAL_PORT ENABLE_SERIAL_CONSOLE ENABLE_ONEWIRE ENABLE_VNC GENESIS_WALLPAPER GENESIS_ACCENT GENESIS_BLANK_TIMEOUT
 	unset GENESIS_PANEL_POSITION GENESIS_PANEL_LAUNCHERS DESKTOP_AUTOLOGIN DEFAULT_BROWSER ENABLE_BOOT_SPLASH
 	unset INSTALL_VSCODE VSCODE_EXTENSIONS PYTHON_PRIMARY PYTHON_LATEST GENESIS_PRUNE_WORK
+	unset ACU_CONNECT ACU_CONNECT_SERVER ACU_PYTHON ACU_PYTHON_PBS_TAG ACU_PYTHON_PBS_SHA256
 	export ENABLE_CLOUD_INIT="1" WPA_COUNTRY="IN" ARCH="arm64"
 }
 
@@ -285,6 +286,32 @@ assert_no_grep 'for unit in' "${CHROOT_LOG}"
 assert_no_grep 'do_sudo_pass' "${CHROOT_LOG}"
 assert_no_file "${ROOTFS_DIR}/stage-custom"
 assert_no_file "${ROOTFS_DIR}/secrets.env"
+# Acu Connect client: its own Python, a system unit as uid 1000, waits for signin
+ACU="${ROOTFS_DIR}/opt/acu-connect"
+assert_file "${ACU}/app/acu_connect/__main__.py"
+assert_file "${ACU}/requirements.lock"
+assert_file "${ACU}/LICENSE"
+assert_exec "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
+assert_exec "${ROOTFS_DIR}/usr/bin/acu-connect"
+assert_grep '^#!/opt/acu-connect/python/bin/python3 -I$' "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
+assert_grep '^PYTHON=/opt/acu-connect/python/bin/python3$' "${ROOTFS_DIR}/usr/bin/acu-connect"
+ACUUNIT="${ROOTFS_DIR}/usr/lib/systemd/system/acu-connect.service"
+assert_grep '^User=1000$' "${ACUUNIT}"
+assert_grep '^Restart=always$' "${ACUUNIT}"
+assert_grep '^StartLimitIntervalSec=0$' "${ACUUNIT}"
+assert_grep '^ExecStart=/usr/lib/acu-connect/acu-connect-service$' "${ACUUNIT}"
+assert_grep '^After=network-online.target genesis-firstboot.service$' "${ACUUNIT}"
+assert_grep '^WantedBy=multi-user.target$' "${ACUUNIT}"
+assert_no_grep 'RestartPreventExitStatus' "${ACUUNIT}"
+assert_grep '^#ACU_SERVER=' "${ROOTFS_DIR}/etc/default/acu-connect"
+assert_grep 'cpython-3\.14\.9\+20261021-aarch64-unknown-linux-gnu-install_only_stripped\.tar\.gz' "${CHROOT_LOG}"
+# shellcheck disable=SC2016  # the chroot log holds the literal heredoc text
+assert_grep '^echo "6f77731d85a14ed848dd4041478cd3ed511523caa3d896b84b436a7edf13cf62  \$tmp/python.tgz" \| sha256sum -c -$' "${CHROOT_LOG}"
+assert_grep '--require-hashes --only-binary=:all: --no-deps -r /opt/acu-connect/requirements.lock' "${CHROOT_LOG}"
+assert_grep '^install -d -m 700 -o 1000 -g 1000 /var/lib/acu-connect$' "${CHROOT_LOG}"
+assert_grep '^systemctl enable acu-connect.service$' "${CHROOT_LOG}"
+assert_no_grep 'acu-connect-raspberry-pi/install.sh' "${CHROOT_LOG}"
+assert_no_grep '/usr/bin/python3 -m (pip|venv)' "${CHROOT_LOG}"
 
 # ===================================================================================
 echo "Scenario 2: Wi-Fi with awkward characters, interfaces, services, knobs off"
@@ -296,6 +323,7 @@ export GENESIS_WALLPAPER=genesis-aurora GENESIS_PANEL_POSITION=bottom GENESIS_PA
 export DEFAULT_BROWSER=firefox ENABLE_VNC=0 DESKTOP_AUTOLOGIN=0 INSTALL_VSCODE=0
 export ENABLE_SERVICES='hello-custom.service' DISABLE_SERVICES='bluetooth.service hciuart.service'
 export PERSISTENT_JOURNAL=0 ENABLE_UNATTENDED_UPGRADES=0
+export ACU_CONNECT_SERVER=https://connect.example.test
 printf 'CUSTOM_GIT_SHA=abc123\nCUSTOM_GIT_REF=main\nCUSTOM_BUILD_URL=https://example.test/run/1\nPASSWORDLESS_SUDO=1\n' > "${STAGE_DIR}/build-info.env"
 run_stage
 rm -f "${STAGE_DIR}/build-info.env"
@@ -385,6 +413,8 @@ else
 	assert_grep '"Café \\"Net\\" \\\\ 5G":' "${NETCFG}"
 fi
 
+assert_grep '^ACU_SERVER=https://connect.example.test$' "${ROOTFS_DIR}/etc/default/acu-connect"
+
 # ===================================================================================
 echo "Scenario 3: running the stage twice does not duplicate config.txt lines"
 run_stage
@@ -445,6 +475,23 @@ if (cd "${STAGE_DIR}/08-python" && PYTHON_LATEST=3.14.9 ./00-run.sh > /dev/null 
 else
 	fail "PYTHON_LATEST=3.14.9 should be accepted"
 fi
+
+# ===================================================================================
+echo "Scenario 7: Acu Connect off, and its knobs checked"
+reset_knobs
+make_rootfs
+export ACU_CONNECT=0
+run_stage
+assert_no_file "${ROOTFS_DIR}/opt/acu-connect"
+assert_no_file "${ROOTFS_DIR}/usr/lib/systemd/system/acu-connect.service"
+assert_no_grep 'acu-connect' "${CHROOT_LOG}"
+for bad in ACU_CONNECT=2 ACU_CONNECT_SERVER=http://connect.example.test 'ACU_CONNECT_SERVER=https://x|y'; do
+	if (cd "${STAGE_DIR}/16-acu-connect" && env ACU_CONNECT=1 "${bad}" ./00-run.sh > /dev/null 2>&1); then
+		fail "${bad} should fail the build"
+	else
+		ok "${bad} fails the build"
+	fi
+done
 
 # ===================================================================================
 echo

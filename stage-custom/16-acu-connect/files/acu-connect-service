@@ -1,0 +1,117 @@
+#!/opt/acu-connect/python/bin/python3 -I
+"""acu-connect-service: keeps the Acu Connect client running (acu-connect.service).
+
+The client (`acu-connect run`) needs a linked device: until someone runs
+`acu-connect signin` and approves the code, this waits quietly instead of letting
+systemd restart a failing client every few seconds. Once linked it runs the
+client, restarts it with a growing pause if it ever stops, and when the device is
+removed from the account (the client exits with 2) it sets the old link aside and
+waits for a new signin, so the service never ends up stopped for good.
+
+It runs on Genesis OS's own Python (/opt/acu-connect/python), never the system
+python3, so apt upgrades and a new system Python version cannot break it.
+"""
+
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+CONFIG_DIR = os.environ.get("ACU_CONFIG_DIR") or "/var/lib/acu-connect"
+CONFIG = os.path.join(CONFIG_DIR, "agent.json")
+# Tests point this at a stand-in; the image runs the client on this interpreter.
+CLIENT = os.environ.get("ACU_CONNECT_CLIENT", "").split() or [sys.executable, "-I", "-m", "acu_connect"]
+POLL = float(os.environ.get("ACU_CONNECT_POLL") or 10)          # seconds between checks while not linked
+FIRST_PAUSE = float(os.environ.get("ACU_CONNECT_PAUSE") or 5)   # after the client stops; doubles up to MAX_PAUSE
+MAX_PAUSE = 60
+STEADY = 300            # a client that ran this long gets the first pause again
+EXIT_REVOKED = 2        # acu_connect.daemon.EXIT_REVOKED: the device was removed from the account
+
+stopping = threading.Event()
+child = None
+
+
+def log(message):
+    print(f"acu-connect-service: {message}", flush=True)
+
+
+def linked():
+    return os.path.isfile(CONFIG)
+
+
+def wayland_display(env):
+    """The Wayland socket of the desktop session, if one exists (labwc usually makes wayland-0)."""
+    runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    try:
+        sockets = sorted(n for n in os.listdir(runtime) if n.startswith("wayland-") and not n.endswith(".lock"))
+    except OSError:
+        sockets = []
+    return sockets[0] if sockets else env.get("WAYLAND_DISPLAY") or "wayland-0"
+
+
+def set_aside():
+    """The device was removed from the account: keep its old link for reference, wait for a new one."""
+    try:
+        os.replace(CONFIG, CONFIG + ".revoked")
+    except OSError as why:
+        log(f"could not set the old link aside: {why}")
+
+
+def run_client():
+    global child
+    env = dict(os.environ)
+    env["WAYLAND_DISPLAY"] = wayland_display(env)
+    env.setdefault("ACU_CONFIG_DIR", CONFIG_DIR)
+    child = subprocess.Popen([*CLIENT, "run"], env=env)
+    try:
+        return child.wait()
+    finally:
+        child = None
+
+
+def stop(_signum, _frame):
+    stopping.set()
+    if child is not None and child.poll() is None:
+        child.terminate()
+
+
+def main():
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    pause = FIRST_PAUSE
+    waiting = False
+    while not stopping.is_set():
+        if not linked():
+            if not waiting:
+                log('this device is not linked yet: run "acu-connect signin" and approve the code to link it')
+                waiting = True
+            stopping.wait(POLL)
+            continue
+        if waiting:
+            log("linked; starting the client")
+            waiting = False
+        started = time.monotonic()
+        code = run_client()
+        if stopping.is_set():
+            break
+        if code == EXIT_REVOKED:
+            set_aside()
+            pause = FIRST_PAUSE
+            continue
+        if time.monotonic() - started >= STEADY:
+            pause = FIRST_PAUSE
+        log(f"the client stopped (exit {code}); starting it again in {pause:g} s")
+        stopping.wait(pause)
+        pause = min(MAX_PAUSE, pause * 2)
+    if child is not None and child.poll() is None:
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            child.kill()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

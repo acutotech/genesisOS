@@ -1,0 +1,15 @@
+# Acu Connect client settings (acu-connect.service and the acu-connect command).
+# After a change: sudo systemctl restart acu-connect
+#
+# Server for "acu-connect signin" (a linked device keeps the server it was linked to)
+#ACU_SERVER=https://connect.acutrotech.com
+# 0: don't look up the approximate location (ipinfo.io)
+#ACU_NETWORK_LOCATION=0
+# desktop sharing: frames per second (1-30), JPEG quality (1-100), scale (e.g. 0.5)
+#ACU_SCREEN_FPS=5
+#ACU_SCREEN_QUALITY=60
+#ACU_SCREEN_SCALE=1
+# 1: never accept mouse and keyboard input
+#ACU_DISABLE_INPUT=1
+# poll: skip WebSockets and use ordinary web requests
+#ACU_TRANSPORT=poll

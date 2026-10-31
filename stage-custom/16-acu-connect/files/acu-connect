@@ -1,0 +1,31 @@
+#!/bin/sh
+# acu-connect: the Acu Connect client's command line (signin, status, signout, run).
+# The client itself runs as acu-connect.service; this only manages the link.
+#
+# Always Genesis OS's own Python (/opt/acu-connect/python), never the system
+# python3. The link is kept in /var/lib/acu-connect, owned by the desktop user
+# (uid 1000) the service runs as, so root's commands run as that user too.
+set -e
+PYTHON=/opt/acu-connect/python/bin/python3
+if [ -r /etc/default/acu-connect ]; then
+	set -a
+	# shellcheck source=/dev/null
+	. /etc/default/acu-connect
+	set +a
+fi
+export ACU_CONFIG_DIR="${ACU_CONFIG_DIR:-/var/lib/acu-connect}"
+if [ ! -x "${PYTHON}" ]; then
+	echo "acu-connect: ${PYTHON} is missing; reinstall Genesis OS's acu-connect" >&2
+	exit 1
+fi
+if [ "$(id -u)" = 0 ]; then
+	user="$(getent passwd 1000 | cut -d: -f1)"
+	if [ -n "${user}" ]; then
+		exec runuser -u "${user}" -- env ACU_CONFIG_DIR="${ACU_CONFIG_DIR}" ${ACU_SERVER:+ACU_SERVER="${ACU_SERVER}"} \
+			"${PYTHON}" -I -m acu_connect "$@"
+	fi
+elif [ "$(id -u)" != 1000 ] && [ ! -w "${ACU_CONFIG_DIR}" ]; then
+	echo "acu-connect: the link belongs to the desktop user (uid 1000): run this as that user or with sudo" >&2
+	exit 1
+fi
+exec "${PYTHON}" -I -m acu_connect "$@"

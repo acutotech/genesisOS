@@ -5,9 +5,9 @@ SHELL := /bin/bash
 SH_FILES := $(shell find . -path ./pi-gen -prune -o -path ./build -prune -o -path ./.git -prune -o \
               \( -name '*.sh' -o -name 'config' -o -name 'custom.conf' -o -name 'genesis-helper' \
               -o -name 'genesis-session' -o -name 'genesis-session-start' -o -name 'genesis-respawn' -o -name 'genesis-fallback' -o -name 'genesis-python' -o -name 'genesis-firstboot' \
-              -o -name 'genesis-shell' -o -name 'genesis-shell-ctl' -o -name 'genesis-settings' \) -type f -print | sort)
+              -o -name 'genesis-shell' -o -name 'genesis-shell-ctl' -o -name 'genesis-settings' -o -name 'acu-connect' \) -type f -print | sort)
 PY_FILES := $(shell find . -path ./pi-gen -prune -o -path ./build -prune -o -path ./.git -prune -o \
-              \( -name '*.py' -o -name 'genesis-xdg-autostart' -o -name 'genesis-idle' \) -type f -print | sort)
+              \( -name '*.py' -o -name 'genesis-xdg-autostart' -o -name 'genesis-idle' -o -name 'acu-connect-service' \) -type f -print | sort)
 YAML_FILES := $(shell find . -path ./pi-gen -prune -o -path ./build -prune -o -path ./.git -prune -o \
               \( -name '*.yml' -o -name '*.yaml' -o -name '.yamllint' \) -type f -print | sort)
 
@@ -34,6 +34,7 @@ test: ## Dry-run the custom stage and first-boot setup; unit-test Genesis Shell 
 	scripts/test-stage.sh
 	scripts/test-firstboot.sh
 	python3 scripts/test-shell-logic.py
+	python3 scripts/test-acu-connect.py
 	python3 -m unittest discover -s imager -v
 
 build: ## Build the image with Docker (see scripts/build-local.sh --help)

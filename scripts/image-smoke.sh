@@ -168,6 +168,59 @@ if [ "${FIRSTBOOT}" = 1 ]; then
 	fi
 fi
 
+# Acu Connect client: its own Python must carry it whatever happens to the system's
+acu_connect() {
+	local failures=0 py=/opt/acu-connect/python/bin/python3 out
+	acheck() { # description, then a command that must succeed
+		local what="$1"
+		shift
+		if "$@"; then echo "  ok    ${what}"; else echo "  FAIL  ${what}"; failures=$((failures + 1)); fi
+	}
+	if [ ! -d "${ROOT}/opt/acu-connect" ]; then
+		echo "  info  no Acu Connect client in this image: skipped"
+		return 0
+	fi
+	acheck "its own Python is installed" test -x "${ROOT}${py}"
+	acheck "acu-connect.service is enabled" test -L "${ROOT}/etc/systemd/system/multi-user.target.wants/acu-connect.service"
+	acheck "it runs as uid 1000 (the desktop user, renamed or not)" grep -qx 'User=1000' "${ROOT}/usr/lib/systemd/system/acu-connect.service"
+	acheck "the link directory belongs to uid 1000" test "$(stat -c '%u %a' "${ROOT}/var/lib/acu-connect" 2> /dev/null)" = "1000 700"
+	echo "  info  $(chroot "${ROOT}" "${py}" -I -c 'import sys, acu_connect; print("acu-connect", acu_connect.VERSION, "on Python", sys.version.split()[0])' 2>&1)"
+	# What an apt upgrade to another Python version, or removing python3, leaves: no system Python.
+	# Hidden in a private mount namespace, so nothing is changed outside it.
+	out="$(unshare --mount --propagation private bash -s "${ROOT}" "${py}" << 'HIDE' 2>&1
+root="$1"; py="$2"
+for f in "${root}"/usr/bin/python3*; do [ -f "${f}" ] && [ ! -L "${f}" ] && mount --bind /dev/null "${f}"; done
+for d in "${root}"/usr/lib/python3*; do [ -d "${d}" ] && mount -t tmpfs none "${d}"; done
+if chroot "${root}" /usr/bin/python3 -c pass 2> /dev/null; then echo "FAIL the system Python is still there"; fi
+chroot "${root}" "${py}" -I -c 'import aiortc, av, cryptography, websockets, acu_connect.daemon' && echo "OK imports"
+chroot "${root}" env ACU_CONFIG_DIR=/tmp/acu-smoke "${py}" -I -m acu_connect status | grep -q 'Not linked' && echo "OK status"
+timeout 4 chroot "${root}" env ACU_CONFIG_DIR=/tmp/acu-smoke /usr/lib/acu-connect/acu-connect-service | grep -q 'not linked yet' && echo "OK supervisor"
+exit 0
+HIDE
+)" || true
+	acheck "the system Python is really hidden for this check" test -z "$(grep '^FAIL' <<< "${out}")"
+	acheck "its packages import without the system Python" grep -q '^OK imports$' <<< "${out}"
+	acheck "acu-connect status works without the system Python" grep -q '^OK status$' <<< "${out}"
+	acheck "the service waits for a signin instead of failing" grep -q '^OK supervisor$' <<< "${out}"
+	# the package's own tests, on this Python and these packages
+	rm -rf "${ROOT}/tmp/acu-tests"
+	mkdir -p "${ROOT}/tmp/acu-tests"
+	cp -R "${REPO_DIR}/stage-custom/16-acu-connect/files/acu-connect-raspberry-pi/tests" "${ROOT}/tmp/acu-tests/tests"
+	if out="$(chroot "${ROOT}" sh -c "cd /tmp/acu-tests && ACU_CONFIG_DIR=/tmp/acu-tests/config ${py} -I -m unittest discover -s tests -t ." 2>&1)"; then
+		acheck "the package's own tests pass ($(grep -o 'Ran [0-9]* tests' <<< "${out}"))" true
+	else
+		echo "${out}" | tail -n 30 | sed 's/^/  | /'
+		acheck "the package's own tests pass" false
+	fi
+	echo "image-smoke: acu-connect: ${failures} failure(s)"
+	[ "${failures}" -eq 0 ]
+}
+if ! acu_connect; then
+	echo "image-smoke: FAIL Acu Connect client" >&2
+	echo 1 > "${OUT}/result"
+	exit 1
+fi
+
 if [ ! -x "${ROOT}/usr/sbin/i2cdetect" ]; then
 	echo "image-smoke: FAIL the image has no /usr/sbin/i2cdetect (i2c-tools missing: the sensor bar cannot scan)" >&2
 	echo 1 > "${OUT}/result"
