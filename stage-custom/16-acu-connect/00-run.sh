@@ -9,9 +9,10 @@
 #   its packages              pip --require-hashes --only-binary=:all: from
 #                             files/requirements.lock, into that Python only
 #   /opt/acu-connect/app      the client (acu_connect), found through a .pth file
-# acu-connect.service runs it at every boot as the desktop user (uid 1000, which
-# survives Genesis Imager's first-boot rename) and restarts it forever; until the
-# box is linked with "acu-connect signin" it waits instead of failing. The screen
+# acu-connect.service starts at every boot and restarts forever; it runs the client
+# as the desktop user (uid 1000, which survives Genesis Imager's first-boot rename)
+# once the box is linked with "acu-connect signin", and not while Raspberry Pi's
+# first-boot wizard still has to rename that user. The screen
 # tools it uses (grim, ffmpeg, wtype, ...) are optional: without one, desktop
 # sharing loses that ability and the rest keeps working.
 
@@ -49,7 +50,10 @@ rm -rf "${ROOTFS_DIR}/opt/acu-connect/app/acu_connect"
 cp -R "${PKG}/acu_connect" "${ROOTFS_DIR}/opt/acu-connect/app/acu_connect"
 find "${ROOTFS_DIR}/opt/acu-connect/app" -name __pycache__ -prune -exec rm -rf {} +
 chmod -R u=rwX,go=rX "${ROOTFS_DIR}/opt/acu-connect/app"
-install -m 644 "${PKG}/LICENSE" "${PKG}/README.md" files/requirements.lock "${ROOTFS_DIR}/opt/acu-connect/"
+install -m 644 "${PKG}/LICENSE" files/requirements.lock "${ROOTFS_DIR}/opt/acu-connect/"
+# how it runs here; the package's README describes its own installer, which is not used
+install -m 644 files/acu-connect.README.md "${ROOTFS_DIR}/opt/acu-connect/README.md"
+install -m 644 "${PKG}/README.md" "${ROOTFS_DIR}/opt/acu-connect/VENDOR-README.md"
 install -D -m 755 files/acu-connect-service "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
 install -D -m 755 files/acu-connect "${ROOTFS_DIR}/usr/bin/acu-connect"
 install -D -m 644 files/acu-connect.service "${ROOTFS_DIR}/usr/lib/systemd/system/acu-connect.service"

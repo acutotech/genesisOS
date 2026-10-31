@@ -2,30 +2,29 @@
 Description=Acu Connect client (remote shell and desktop access)
 Documentation=file:///opt/acu-connect/README.md
 Wants=network-online.target
-# after first boot has renamed the desktop user and moved its home
-After=network-online.target genesis-firstboot.service
+# after first boot has renamed the desktop user and moved its home (Genesis Imager's
+# genesis-firstboot, or userconf.txt through userconfig.service)
+After=network-online.target genesis-firstboot.service userconfig.service
 # never give up restarting it
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# The desktop user, by uid: Genesis Imager renames it on first boot, the uid stays.
-# Running as that user lets screen sharing reach its Wayland session.
-User=1000
+# The supervisor runs as root and starts the client as the desktop user (uid 1000,
+# looked up at each start: it may have been renamed) once the box is linked, and
+# never while Raspberry Pi's first-boot wizard still has to rename that user
+# (usermod refuses to rename a user with running processes). It also keeps
+# /var/lib/acu-connect owned by that user, who writes the link there (signin).
 ExecStart=/usr/lib/acu-connect/acu-connect-service
 Restart=always
 RestartSec=10
 TimeoutStopSec=20
 Environment=ACU_CONFIG_DIR=/var/lib/acu-connect
-Environment=PYTHONUNBUFFERED=1
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=DISPLAY=:0
 # settings (ACU_SERVER, ACU_SCREEN_FPS, ACU_NETWORK_LOCATION=0, ...): they override the above
 EnvironmentFile=-/etc/default/acu-connect
-# the link (agent.json); systemd keeps it owned by the service user
-StateDirectory=acu-connect
-StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target

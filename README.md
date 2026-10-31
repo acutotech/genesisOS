@@ -298,11 +298,18 @@ and its images private, or have Acutro's written permission.
 (python-build-standalone 3.14, `/opt/acu-connect/python`) with its packages
 installed from a hash-pinned lock file, never on the system `python3` or
 Debian's `python3-*` packages. So an `apt upgrade`, a new Debian Python
-version, or removing `python3` altogether does not touch it; the image build
-checks exactly that by hiding the system Python and starting the client.
-`acu-connect.service` starts it at every boot as the desktop user (by uid
-1000, which Genesis Imager's first-boot rename keeps) and restarts it forever,
-with growing pauses if it keeps stopping. The screen tools it uses (`grim`,
+version, or removing `python3` altogether does not touch it. CI's smoke test
+hides the system Python inside the built image, then checks that the packages
+import, that `acu-connect` works for root and for the desktop user, and that the
+service starts the real client as uid 1000 (against a server that is not
+there), stops it with the service, and holds it back while a rename is pending.
+`acu-connect.service` starts at every boot and restarts forever, with growing
+pauses if the client keeps stopping. It runs as root and starts the client as
+the desktop user (by uid 1000, whatever it is called now) once the box is
+linked; never while Raspberry Pi's first-boot wizard (or `rename-user`) still
+has to rename that user, since `usermod` refuses to rename a user with running
+processes and the wizard would leave the account half renamed. The client
+starts within seconds of the wizard finishing. The screen tools it uses (`grim`,
 `ffmpeg`, `wtype`, `wlrctl`, `xdotool`, ...) are optional: if an upgrade
 removes one, desktop sharing loses that ability and the rest keeps working.
 
@@ -316,11 +323,14 @@ acu-connect signout     # unlink
 journalctl -u acu-connect -f
 ```
 
-When a box is removed from the account, the service sets the old link aside
+`signin --force` (link again) and `signout` take effect at once: the service
+restarts the client on the new link, or stops it. When a box is removed from
+the account, the service sets that link aside
 (`/var/lib/acu-connect/agent.json.revoked`) and waits for a new `signin`
-instead of stopping for good. Settings (server, frame rate, location lookup,
-input) go in `/etc/default/acu-connect`; then `sudo systemctl restart
-acu-connect`.
+instead of stopping for good; a revoke of an old link never touches a newer
+one. Settings (server, frame rate, location lookup, input) go in
+`/etc/default/acu-connect` as `NAME=value` lines; then `sudo systemctl restart
+acu-connect`. On the box, `/opt/acu-connect/README.md` sums this up.
 
 **Updating the package.** Replace `files/acu-connect-raspberry-pi` with the
 new version, run `python3 scripts/acu-connect-lock.py` (it pins every

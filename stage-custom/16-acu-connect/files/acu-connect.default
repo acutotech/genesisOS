@@ -1,5 +1,6 @@
 # Acu Connect client settings (acu-connect.service and the acu-connect command).
 # After a change: sudo systemctl restart acu-connect
+# NAME=value lines, read by systemd and by the acu-connect command (never run as shell).
 #
 # Server for "acu-connect signin" (a linked device keeps the server it was linked to)
 #ACU_SERVER=https://connect.acutrotech.com

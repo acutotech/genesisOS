@@ -291,16 +291,28 @@ ACU="${ROOTFS_DIR}/opt/acu-connect"
 assert_file "${ACU}/app/acu_connect/__main__.py"
 assert_file "${ACU}/requirements.lock"
 assert_file "${ACU}/LICENSE"
+assert_file "${ACU}/VENDOR-README.md"
+assert_grep 'systemctl status acu-connect|journalctl -u acu-connect' "${ACU}/README.md"
+# the package's own installer and per-user unit are not used
+assert_no_file "${ACU}/install.sh"
+assert_no_file "${ACU}/acu-connect.service"
+assert_no_file "${ROOTFS_DIR}/usr/lib/systemd/user/acu-connect.service"
+assert_no_file "${ROOTFS_DIR}/etc/systemd/user/default.target.wants/acu-connect.service"
 assert_exec "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
 assert_exec "${ROOTFS_DIR}/usr/bin/acu-connect"
 assert_grep '^#!/opt/acu-connect/python/bin/python3 -I$' "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
 assert_grep '^PYTHON=/opt/acu-connect/python/bin/python3$' "${ROOTFS_DIR}/usr/bin/acu-connect"
+assert_grep 'exec /usr/sbin/runuser -u ' "${ROOTFS_DIR}/usr/bin/acu-connect"
+assert_no_grep '^[[:space:]]*\. /etc/default/acu-connect' "${ROOTFS_DIR}/usr/bin/acu-connect"
 ACUUNIT="${ROOTFS_DIR}/usr/lib/systemd/system/acu-connect.service"
-assert_grep '^User=1000$' "${ACUUNIT}"
+# root supervisor: a uid-1000 process from boot would block the first-boot wizard's rename
+assert_no_grep '^User=' "${ACUUNIT}"
+assert_no_grep '^StateDirectory' "${ACUUNIT}"
+assert_no_grep 'PYTHONUNBUFFERED' "${ACUUNIT}"
 assert_grep '^Restart=always$' "${ACUUNIT}"
 assert_grep '^StartLimitIntervalSec=0$' "${ACUUNIT}"
 assert_grep '^ExecStart=/usr/lib/acu-connect/acu-connect-service$' "${ACUUNIT}"
-assert_grep '^After=network-online.target genesis-firstboot.service$' "${ACUUNIT}"
+assert_grep '^After=network-online.target genesis-firstboot.service userconfig.service$' "${ACUUNIT}"
 assert_grep '^WantedBy=multi-user.target$' "${ACUUNIT}"
 assert_no_grep 'RestartPreventExitStatus' "${ACUUNIT}"
 assert_grep '^#ACU_SERVER=' "${ROOTFS_DIR}/etc/default/acu-connect"
@@ -485,13 +497,28 @@ run_stage
 assert_no_file "${ROOTFS_DIR}/opt/acu-connect"
 assert_no_file "${ROOTFS_DIR}/usr/lib/systemd/system/acu-connect.service"
 assert_no_grep 'acu-connect' "${CHROOT_LOG}"
-for bad in ACU_CONNECT=2 ACU_CONNECT_SERVER=http://connect.example.test 'ACU_CONNECT_SERVER=https://x|y'; do
-	if (cd "${STAGE_DIR}/16-acu-connect" && env ACU_CONNECT=1 "${bad}" ./00-run.sh > /dev/null 2>&1); then
-		fail "${bad} should fail the build"
+acu_bad() { # knob=value, then the message the build must stop with
+	local err
+	if err="$(cd "${STAGE_DIR}/16-acu-connect" && env ACU_CONNECT=1 "$1" ./00-run.sh 2>&1 > /dev/null)"; then
+		fail "$1 should fail the build"
+	elif grep -qF -- "$2" <<< "${err}"; then
+		ok "$1 fails the build ($2)"
 	else
-		ok "${bad} fails the build"
+		fail "$1 failed, but not with '$2': ${err}"
 	fi
-done
+}
+acu_bad ACU_CONNECT=2 'is not 0 or 1'
+acu_bad ACU_CONNECT_SERVER=http://connect.example.test 'is not a plain https:// URL'
+# characters sed's s||| or the shell would take: the check must catch them, not a later failure
+acu_bad 'ACU_CONNECT_SERVER=https://x|y' 'is not a plain https:// URL'
+acu_bad 'ACU_CONNECT_SERVER=https://x.example/?a=1' 'is not a plain https:// URL'
+acu_bad 'ACU_CONNECT_SERVER=https://x.example/&' 'is not a plain https:// URL'
+acu_bad 'ACU_CONNECT_SERVER=https://x.example/ a' 'is not a plain https:// URL'
+reset_knobs
+make_rootfs
+export ACU_CONNECT_SERVER=https://connect.example.test:8443/acu
+run_stage
+assert_grep '^ACU_SERVER=https://connect\.example\.test:8443/acu$' "${ROOTFS_DIR}/etc/default/acu-connect"
 
 # ===================================================================================
 echo

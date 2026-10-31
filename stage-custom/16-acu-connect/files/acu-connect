@@ -4,14 +4,28 @@
 #
 # Always Genesis OS's own Python (/opt/acu-connect/python), never the system
 # python3. The link is kept in /var/lib/acu-connect, owned by the desktop user
-# (uid 1000) the service runs as, so root's commands run as that user too.
+# (uid 1000) the client runs as, so root's commands run as that user too.
 set -e
 PYTHON=/opt/acu-connect/python/bin/python3
+# The ACU_* settings of /etc/default/acu-connect, read the way systemd's
+# EnvironmentFile reads them (NAME=value, one level of quotes), never run as shell.
 if [ -r /etc/default/acu-connect ]; then
-	set -a
-	# shellcheck source=/dev/null
-	. /etc/default/acu-connect
-	set +a
+	while IFS= read -r line || [ -n "${line}" ]; do
+		case "${line}" in
+			ACU_*=*) ;;
+			*) continue ;;
+		esac
+		name="${line%%=*}"
+		case "${name}" in
+			*[!A-Za-z0-9_]*) continue ;;
+		esac
+		value="${line#*=}"
+		case "${value}" in
+			\"*\") value="${value#\"}"; value="${value%\"}" ;;
+			\'*\') value="${value#\'}"; value="${value%\'}" ;;
+		esac
+		export "${name}=${value}"
+	done < /etc/default/acu-connect
 fi
 export ACU_CONFIG_DIR="${ACU_CONFIG_DIR:-/var/lib/acu-connect}"
 if [ ! -x "${PYTHON}" ]; then
@@ -21,8 +35,8 @@ fi
 if [ "$(id -u)" = 0 ]; then
 	user="$(getent passwd 1000 | cut -d: -f1)"
 	if [ -n "${user}" ]; then
-		exec runuser -u "${user}" -- env ACU_CONFIG_DIR="${ACU_CONFIG_DIR}" ${ACU_SERVER:+ACU_SERVER="${ACU_SERVER}"} \
-			"${PYTHON}" -I -m acu_connect "$@"
+		# the full path: root's PATH does not always have sbin (cron, env -i)
+		exec /usr/sbin/runuser -u "${user}" -- env ACU_CONFIG_DIR="${ACU_CONFIG_DIR}" "${PYTHON}" -I -m acu_connect "$@"
 	fi
 elif [ "$(id -u)" != 1000 ] && [ ! -w "${ACU_CONFIG_DIR}" ]; then
 	echo "acu-connect: the link belongs to the desktop user (uid 1000): run this as that user or with sudo" >&2

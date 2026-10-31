@@ -196,7 +196,8 @@ fi
 
 # Acu Connect client: its own Python must carry it whatever happens to the system's
 acu_connect() {
-	local failures=0 py=/opt/acu-connect/python/bin/python3 out
+	local failures=0 py=/opt/acu-connect/python/bin/python3 unit out
+	unit="${ROOT}/usr/lib/systemd/system/acu-connect.service"
 	acheck() { # description, then a command that must succeed
 		local what="$1"
 		shift
@@ -208,11 +209,14 @@ acu_connect() {
 	fi
 	acheck "its own Python is installed" test -x "${ROOT}${py}"
 	acheck "acu-connect.service is enabled" test -L "${ROOT}/etc/systemd/system/multi-user.target.wants/acu-connect.service"
-	acheck "it runs as uid 1000 (the desktop user, renamed or not)" grep -qx 'User=1000' "${ROOT}/usr/lib/systemd/system/acu-connect.service"
+	# a uid-1000 process from boot would make the first-boot wizard's rename fail half-way
+	acheck "the service is a root supervisor (no User=)" test -z "$(grep '^User=' "${unit}")"
+	acheck "it starts after a userconf.txt rename" grep -q '^After=.*userconfig\.service' "${unit}"
 	acheck "the link directory belongs to uid 1000" test "$(stat -c '%u %a' "${ROOT}/var/lib/acu-connect" 2> /dev/null)" = "1000 700"
 	echo "  info  $(chroot "${ROOT}" "${py}" -I -c 'import sys, acu_connect; print("acu-connect", acu_connect.VERSION, "on Python", sys.version.split()[0])' 2>&1)"
 	# What an apt upgrade to another Python version, or removing python3, leaves: no system Python.
-	# Hidden in a private mount namespace, so nothing is changed outside it.
+	# Hidden in a private mount namespace, so nothing is changed outside it. Then the real
+	# command and the real client, linked to a server that is not there.
 	out="$(unshare --mount --propagation private bash -s "${ROOT}" "${py}" << 'HIDE' 2>&1
 root="$1"; py="$2"
 for f in "${root}"/usr/bin/python3*; do [ -f "${f}" ] && [ ! -L "${f}" ] && mount --bind /dev/null "${f}"; done
@@ -220,20 +224,67 @@ for d in "${root}"/usr/lib/python3*; do [ -d "${d}" ] && mount -t tmpfs none "${
 if chroot "${root}" /usr/bin/python3 -c pass 2> /dev/null; then echo "FAIL the system Python is still there"; fi
 chroot "${root}" "${py}" -I -c 'import aiortc, av, cryptography, websockets, acu_connect.daemon' && echo "OK imports"
 chroot "${root}" env ACU_CONFIG_DIR=/tmp/acu-smoke "${py}" -I -m acu_connect status | grep -q 'Not linked' && echo "OK status"
-timeout 4 chroot "${root}" env ACU_CONFIG_DIR=/tmp/acu-smoke /usr/lib/acu-connect/acu-connect-service | grep -q 'not linked yet' && echo "OK supervisor"
+link=/tmp/acu-link
+mkdir -m 700 "${root}${link}"
+printf '{"server": "http://127.0.0.1:9", "deviceToken": "smoke", "name": "smoke-box", "deviceId": "smoke-id"}\n' > "${root}${link}/agent.json"
+chmod 600 "${root}${link}/agent.json"
+chown -R 1000:1000 "${root}${link}"
+# root without sbin in PATH (cron, env -i): the command still reaches uid 1000's link
+chroot "${root}" env -i PATH=/usr/bin:/bin ACU_CONFIG_DIR="${link}" /usr/bin/acu-connect status 2>&1 | grep -q 'smoke-box' && echo "OK command as root"
+chroot --userspec=1000:1000 "${root}" env -i PATH=/usr/bin:/bin HOME=/tmp ACU_CONFIG_DIR="${link}" /usr/bin/acu-connect status 2>&1 | grep -q 'smoke-box' && echo "OK command as the desktop user"
+# the supervisor starts the real client as uid 1000; it tries the server, and stops with the service
+log="$(mktemp)"
+chroot "${root}" env ACU_CONFIG_DIR="${link}" ACU_CONNECT_HOLD=/nonexistent /usr/lib/acu-connect/acu-connect-service > "${log}" 2>&1 &
+sup=$!
+client=""
+for _ in $(seq 1 80); do
+	client="$(pgrep -u 1000 -f 'acu_connect run' | head -n 1)"
+	[ -n "${client}" ] && grep -q 'connection error' "${log}" && break
+	sleep 0.5
+done
+[ -n "${client}" ] && [ "$(stat -c %u "/proc/${client}" 2> /dev/null)" = 1000 ] && echo "OK client runs as uid 1000"
+grep -q 'connection error' "${log}" && echo "OK client starts and tries the server"
+kill -TERM "${sup}" 2> /dev/null
+for _ in $(seq 1 40); do kill -0 "${sup}" 2> /dev/null || break; sleep 0.5; done
+if kill -0 "${sup}" 2> /dev/null; then
+	kill -KILL "${sup}"
+	pkill -KILL -u 1000 -f 'acu_connect run'
+else
+	echo "OK supervisor stops"
+fi
+wait "${sup}" 2> /dev/null
+if [ -n "${client}" ] && ! kill -0 "${client}" 2> /dev/null; then echo "OK client stopped with it"; fi
+sed 's/^/LOG /' "${log}"
+# while a first-boot rename is pending, no uid-1000 process at all
+touch "${root}/tmp/acu-hold"
+chroot "${root}" env ACU_CONFIG_DIR="${link}" ACU_CONNECT_HOLD=/tmp/acu-hold /usr/lib/acu-connect/acu-connect-service > "${log}" 2>&1 &
+sup=$!
+sleep 4
+grep -q 'waiting for the first-boot setup' "${log}" && ! pgrep -u 1000 -f 'acu_connect run' > /dev/null && echo "OK held while a rename is pending"
+kill -TERM "${sup}" 2> /dev/null
+wait "${sup}" 2> /dev/null
+rm -f "${log}"
 exit 0
 HIDE
 )" || true
+	grep '^LOG ' <<< "${out}" | sed 's/^LOG /  | /' | tail -n 15
 	acheck "the system Python is really hidden for this check" test -z "$(grep '^FAIL' <<< "${out}")"
 	acheck "its packages import without the system Python" grep -q '^OK imports$' <<< "${out}"
 	acheck "acu-connect status works without the system Python" grep -q '^OK status$' <<< "${out}"
-	acheck "the service waits for a signin instead of failing" grep -q '^OK supervisor$' <<< "${out}"
+	acheck "acu-connect works for root, even without sbin in PATH" grep -q '^OK command as root$' <<< "${out}"
+	acheck "acu-connect works for the desktop user" grep -q '^OK command as the desktop user$' <<< "${out}"
+	acheck "the service runs the client as uid 1000" grep -q '^OK client runs as uid 1000$' <<< "${out}"
+	acheck "the client starts and tries its server" grep -q '^OK client starts and tries the server$' <<< "${out}"
+	acheck "the service stops promptly, and the client with it" test "$(grep -c '^OK \(supervisor stops\|client stopped with it\)$' <<< "${out}")" = 2
+	acheck "no client while a first-boot rename is pending" grep -q '^OK held while a rename is pending$' <<< "${out}"
 	# the package's own tests, on this Python and these packages
 	rm -rf "${ROOT}/tmp/acu-tests"
 	mkdir -p "${ROOT}/tmp/acu-tests"
 	cp -R "${REPO_DIR}/stage-custom/16-acu-connect/files/acu-connect-raspberry-pi/tests" "${ROOT}/tmp/acu-tests/tests"
-	if out="$(chroot "${ROOT}" sh -c "cd /tmp/acu-tests && ACU_CONFIG_DIR=/tmp/acu-tests/config ${py} -I -m unittest discover -s tests -t ." 2>&1)"; then
-		acheck "the package's own tests pass ($(grep -o 'Ran [0-9]* tests' <<< "${out}"))" true
+	# tests/ has no __init__.py: discover it as the top level (acu_connect comes from the .pth)
+	if out="$(chroot "${ROOT}" sh -c "cd /tmp/acu-tests && ACU_CONFIG_DIR=/tmp/acu-tests/config ${py} -I -m unittest discover -s tests" 2>&1)" \
+		&& grep -q 'Ran [1-9][0-9]* tests\?' <<< "${out}"; then
+		acheck "the package's own tests pass ($(grep -o 'Ran [0-9]* tests\?' <<< "${out}"))" true
 	else
 		echo "${out}" | tail -n 30 | sed 's/^/  | /'
 		acheck "the package's own tests pass" false

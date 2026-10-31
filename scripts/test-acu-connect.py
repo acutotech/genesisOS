@@ -4,18 +4,24 @@
     python3 scripts/test-acu-connect.py
 
 The supervisor runs against a stand-in client that records each start and does
-what the test asks (exit with a code, or run until it is stopped). Checked:
-it waits quietly while the device is not linked, starts the client once it is,
-restarts a failing client with growing pauses, sets a revoked link aside and
-waits for a new signin instead of stopping for good, stops promptly on SIGTERM,
-and hands the client the desktop session's Wayland socket. Also the wheel rule of
-scripts/acu-connect-lock.py. The real client and its Python packages are checked
-inside the built image (scripts/image-smoke.sh). Used by `make test`.
+what the test asks (exit with a code, run until it is stopped, ignore SIGTERM,
+or re-link and report a revoke). Checked: it waits quietly while the device is
+not linked, starts the client once it is, restarts a failing client with growing
+pauses, sets a revoked link aside and waits for a new signin instead of stopping
+for good, never sets aside a link newer than the client's, restarts or stops the
+client when the link is replaced or removed, holds the client back while a
+first-boot rename of the desktop user is pending, kills a client that ignores
+SIGTERM, keeps systemd's variables away from the client, hands it the desktop
+session's Wayland socket, and (as root) runs it as the desktop user. Also the
+wheel rule of scripts/acu-connect-lock.py. The real client and its Python
+packages are checked inside the built image (scripts/image-smoke.sh). Used by
+`make test`.
 """
 import importlib.machinery
 import importlib.util
 import json
 import os
+import pwd
 import shutil
 import signal
 import socket
@@ -32,18 +38,38 @@ LOCK_TOOL = os.path.join(HERE, "acu-connect-lock.py")
 STUB = r'''#!/usr/bin/env python3
 import json, os, signal, sys, time
 work = os.environ["STUB_DIR"]
+config = os.path.join(os.environ.get("ACU_CONFIG_DIR", ""), "agent.json")
+try:
+    token = json.load(open(config))["deviceToken"]
+except (OSError, ValueError, KeyError):
+    token = None
 with open(os.path.join(work, "calls.jsonl"), "a") as fh:
     fh.write(json.dumps({"argv": sys.argv[1:], "wayland": os.environ.get("WAYLAND_DISPLAY"),
-                         "config": os.environ.get("ACU_CONFIG_DIR")}) + "\n")
+                         "config": os.environ.get("ACU_CONFIG_DIR"), "token": token, "pid": os.getpid(),
+                         "uid": os.getuid(), "home": os.environ.get("HOME"), "env": sorted(os.environ)}) + "\n")
 plan = os.path.join(work, "plan")
 steps = open(plan).read().split() if os.path.exists(plan) else []
 step = steps.pop(0) if steps else "serve"
 with open(plan, "w") as fh:
     fh.write(" ".join(steps))
+def ended(*_):
+    with open(os.path.join(work, "terminated"), "a") as fh:
+        fh.write(f"{token}\n")
+    sys.exit(0)
 if step == "serve":
-    signal.signal(signal.SIGTERM, lambda *_: (open(os.path.join(work, "terminated"), "w").close(), sys.exit(0)))
+    signal.signal(signal.SIGTERM, ended)
     while True:
         time.sleep(0.05)
+if step == "stubborn":            # ignores SIGTERM
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(0.05)
+if step == "relink2":             # signin --force landed just as the old link was revoked
+    tmp = config + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"server": "https://example.test", "deviceToken": "new"}, fh)
+    os.replace(tmp, config)
+    sys.exit(2)
 sys.exit(int(step))
 '''
 
@@ -87,11 +113,38 @@ class Supervisor(unittest.TestCase):
             [sys.executable, "-I", SERVICE], stdout=self.out, stderr=subprocess.STDOUT,
             env={**os.environ, "STUB_DIR": self.tmp, "ACU_CONNECT_CLIENT": f"{sys.executable} {self.stub}",
                  "ACU_CONFIG_DIR": self.config, "XDG_RUNTIME_DIR": self.runtime, "WAYLAND_DISPLAY": "wayland-0",
-                 "ACU_CONNECT_POLL": "0.1", "ACU_CONNECT_PAUSE": "0.2", **env})
+                 "ACU_CONNECT_POLL": "0.1", "ACU_CONNECT_PAUSE": "0.2", "ACU_CONNECT_GRACE": "1",
+                 "ACU_CONNECT_UID": str(os.getuid()), "ACU_CONNECT_HOLD": self.hold, **env})
 
-    def link(self):
-        with open(os.path.join(self.config, "agent.json"), "w") as fh:
-            json.dump({"server": "https://example.test", "deviceToken": "t"}, fh)
+    @property
+    def hold(self):
+        return os.path.join(self.tmp, "piwiz.desktop")
+
+    def link(self, token="t"):
+        """What acu-connect signin does: the new agent.json replaces the old one in one step."""
+        tmp = os.path.join(self.config, "agent.json.tmp")
+        with open(tmp, "w") as fh:
+            json.dump({"server": "https://example.test", "deviceToken": token}, fh)
+        os.replace(tmp, os.path.join(self.config, "agent.json"))
+
+    def terminated(self):
+        try:
+            with open(os.path.join(self.tmp, "terminated")) as fh:
+                return fh.read().split()
+        except FileNotFoundError:
+            return []
+
+    @staticmethod
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        try:   # a zombie is gone for this purpose
+            with open(f"/proc/{pid}/stat") as fh:
+                return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return True
 
     def calls(self):
         try:
@@ -167,6 +220,111 @@ class Supervisor(unittest.TestCase):
         self.start()
         self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
         self.assertEqual(self.calls()[0]["wayland"], "wayland-0")
+        self.stop()
+
+
+    def test_a_relink_while_running_restarts_the_client_on_the_new_link(self):
+        self.link("old")
+        self.start()
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        self.link("new")                                         # acu-connect signin --force
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 2))
+        self.assertEqual([c["token"] for c in self.calls()], ["old", "new"])
+        self.assertEqual(self.terminated(), ["old"])             # the old link stopped serving
+        self.assertIn("the link changed", self.output())
+        self.stop()
+
+    def test_a_signout_while_running_stops_the_client(self):
+        self.link("old")
+        self.start()
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        os.remove(os.path.join(self.config, "agent.json"))       # signout, even with the server unreachable
+        self.assertTrue(wait_for(lambda: self.terminated() == ["old"]))
+        self.assertTrue(wait_for(lambda: "not linked yet" in self.output()))
+        time.sleep(0.5)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertIsNone(self.proc.poll())
+        self.stop()
+
+    def test_a_revoke_of_the_old_link_never_sets_aside_a_new_one(self):
+        self.link("old")
+        self.start("relink2")
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 2))
+        self.assertEqual(self.calls()[1]["token"], "new")       # started again at once on the new link
+        self.assertFalse(os.path.exists(os.path.join(self.config, "agent.json.revoked")))
+        with open(os.path.join(self.config, "agent.json")) as fh:
+            self.assertEqual(json.load(fh)["deviceToken"], "new")
+        self.stop()
+
+    def test_no_client_while_a_first_boot_rename_is_pending(self):
+        open(self.hold, "w").close()                             # Raspberry Pi's wizard is armed
+        self.link()
+        self.start()
+        time.sleep(0.8)
+        self.assertEqual(self.calls(), [])                       # nothing runs as the desktop user
+        self.assertEqual(self.output().count("waiting for the first-boot setup"), 1)
+        os.remove(self.hold)                                     # the wizard finished (cancel-rename)
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        self.stop()
+
+    def test_a_rename_armed_while_running_stops_the_client_until_it_is_done(self):
+        self.link()
+        self.start()
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        open(self.hold, "w").close()                             # sudo rename-user
+        self.assertTrue(wait_for(lambda: self.terminated() == ["t"]))
+        time.sleep(0.5)
+        self.assertEqual(len(self.calls()), 1)
+        os.remove(self.hold)
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 2))
+        self.stop()
+
+    def test_a_client_that_ignores_sigterm_is_killed(self):
+        self.link()
+        self.start("stubborn")
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        pid = self.calls()[0]["pid"]
+        started = time.monotonic()
+        self.stop()                                              # GRACE is 1 s in these tests
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertTrue(wait_for(lambda: not self.alive(pid), timeout=3))
+        self.assertIn("did not stop within", self.output())
+
+    def test_a_client_that_cannot_start_is_retried(self):
+        self.link()
+        self.start(ACU_CONNECT_CLIENT=os.path.join(self.tmp, "missing"))
+        self.assertTrue(wait_for(lambda: self.output().count("cannot start the client") >= 2))
+        self.assertIn("starting it again in", self.output())
+        self.assertIsNone(self.proc.poll())
+        self.stop()
+
+    def test_the_client_gets_no_systemd_or_supervisor_variables(self):
+        self.link()
+        self.start(INVOCATION_ID="abc", JOURNAL_STREAM="1:2", PYTHONUNBUFFERED="1", ACU_SERVER="https://s.test")
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        env = self.calls()[0]["env"]
+        for name in ("INVOCATION_ID", "JOURNAL_STREAM", "PYTHONUNBUFFERED", "ACU_CONNECT_POLL", "ACU_CONNECT_CLIENT"):
+            self.assertNotIn(name, env)
+        self.assertIn("ACU_SERVER", env)                         # the client's own settings pass through
+        self.stop()
+
+    @unittest.skipUnless(os.geteuid() == 0, "needs root, as acu-connect.service runs")
+    def test_as_root_the_client_runs_as_the_desktop_user(self):
+        nobody = pwd.getpwnam("nobody")
+        os.chmod(self.tmp, 0o777)
+        os.chmod(self.stub, 0o755)
+        open(os.path.join(self.tmp, "calls.jsonl"), "w").close()
+        os.chmod(os.path.join(self.tmp, "calls.jsonl"), 0o666)
+        self.link()
+        os.chmod(os.path.join(self.config, "agent.json"), 0o644)
+        self.start(ACU_CONNECT_UID=str(nobody.pw_uid))
+        os.chmod(os.path.join(self.tmp, "plan"), 0o666)
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        call = self.calls()[0]
+        self.assertEqual(call["uid"], nobody.pw_uid)
+        self.assertEqual(call["home"], nobody.pw_dir)
+        st = os.stat(self.config)                                # the link directory is the user's
+        self.assertEqual((st.st_uid, oct(st.st_mode & 0o777)), (nobody.pw_uid, "0o700"))
         self.stop()
 
 
