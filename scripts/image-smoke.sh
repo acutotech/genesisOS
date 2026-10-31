@@ -37,7 +37,7 @@ WORK="$(mktemp -d)"
 LOOP=""
 MOUNTED=()
 
-# shellcheck disable=SC2317  # invoked through the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked through the EXIT trap (SC2329 on newer shellcheck)
 cleanup() {
 	set +e
 	for m in "${MOUNTED[@]}"; do

@@ -114,7 +114,7 @@ jobs:
       matrix:
         include:
           - {os: ubuntu-latest, python: "3.13"}
-          - {os: ubuntu-latest, python: "3.9"}
+          - {os: ubuntu-24.04, python: "3.9"}   # 3.9 is not built for ubuntu-latest (26.04)
           - {os: windows-latest, python: "3.13"}
           - {os: macos-latest, python: "3.13"}
     steps:
