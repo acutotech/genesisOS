@@ -3,6 +3,14 @@
 
 Honours OnlyShowIn/NotShowIn (desktop name "Genesis"), Hidden, TryExec and the
 user's ~/.config/autostart overrides, like a desktop-environment session manager.
+
+PolicyKit authentication agents are special: polkit allows one per session, and
+a second one shows "An authentication agent already exists for the given
+subject". The Raspberry Pi desktop packages can bring more than one, so at most
+one agent entry is started (lxpolkit first), and none when this user's session
+already runs one (a user service, say).
+
+    genesis-xdg-autostart [--dry-run]   --dry-run: print what would start, start nothing
 """
 
 import os
@@ -14,6 +22,18 @@ gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
 DESKTOP = "Genesis"
+# polkit authentication agents, by program name; the first one present is preferred
+AGENTS = (
+    "lxpolkit",
+    "polkit-gnome-authentication-agent-1",
+    "polkit-mate-authentication-agent-1",
+    "lxqt-policykit-agent",
+    "polkit-kde-authentication-agent-1",
+    "xfce-polkit",
+    "polkit-efl-authentication-agent-1",
+    "hyprpolkitagent",
+    "soteria",
+)
 
 
 def autostart_dirs():
@@ -38,8 +58,70 @@ def entries():
     return seen
 
 
-def main():
-    launched = 0
+def program(command):
+    """The program an Exec line (or a process's argv[0]) runs, without its directory."""
+    words = (command or "").split()
+    while words and (words[0] == "env" or "=" in words[0]):
+        words.pop(0)
+    return os.path.basename(words[0]) if words else ""
+
+
+def is_agent(name, command):
+    """A polkit authentication agent, known by its program or by its file name."""
+    stem = os.path.splitext(name)[0].lower()
+    if program(command) in AGENTS or stem in AGENTS:
+        return True
+    return ("polkit" in stem or "policykit" in stem) and ("agent" in stem or "auth" in stem)
+
+
+def choose(candidates, agent_running):
+    """Which entries to start: [(name, command)] in order -> names, with at most one agent.
+
+    No agent when one is already running (or a user service provides one); otherwise
+    the preferred agent (AGENTS order, then file name).
+    """
+    agents = [(name, command) for name, command in candidates if is_agent(name, command)]
+    pick = None
+    if agents and not agent_running:
+        rank = {prog: i for i, prog in enumerate(AGENTS)}
+        pick = min(agents, key=lambda entry: (rank.get(program(entry[1]), len(AGENTS)), entry[0]))[0]
+    return [name for name, command in candidates if not is_agent(name, command) or name == pick]
+
+
+def running_agent(proc="/proc"):
+    """The program of a polkit agent this user already runs (in this session when that can be told)."""
+    uid = os.getuid()
+    try:
+        with open(os.path.join(proc, "self", "sessionid")) as fh:
+            session = fh.read().strip()
+    except OSError:
+        session = ""
+    if session == "4294967295":   # no audit session: compare users only
+        session = ""
+    for entry in os.listdir(proc):
+        if not entry.isdigit():
+            continue
+        base = os.path.join(proc, entry)
+        try:
+            if os.stat(base).st_uid != uid:
+                continue
+            with open(os.path.join(base, "cmdline"), "rb") as fh:
+                argv0 = fh.read().split(b"\0", 1)[0].decode(errors="replace")
+            if session:
+                with open(os.path.join(base, "sessionid")) as fh:
+                    if fh.read().strip() != session:
+                        continue
+        except OSError:
+            continue
+        if program(argv0) in AGENTS:
+            return program(argv0)
+    return None
+
+
+def main(argv):
+    dry_run = "--dry-run" in argv
+    candidates = []
+    infos = {}
     for name, path in entries().items():
         keyfile = GLib.KeyFile()
         try:
@@ -66,14 +148,30 @@ def main():
             continue
         if not info.get_show_in(DESKTOP):
             continue
+        candidates.append((name, info.get_commandline() or ""))
+        infos[name] = info
+
+    running = running_agent()
+    if running:
+        print(f"autostart: a polkit agent is already running ({running}); not starting another")
+    chosen = choose(candidates, bool(running))
+    for name, command in candidates:
+        if name not in chosen:
+            print(f"autostart: not starting {name} ({program(command)}): one polkit agent per session")
+    launched = 0
+    for name in chosen:
+        if dry_run:
+            print(f"autostart: would start {name}: {infos[name].get_commandline()}")
+            continue
         try:
-            info.launch([], None)
+            infos[name].launch([], None)
             launched += 1
         except GLib.Error as exc:
             print(f"autostart: cannot launch {name}: {exc}", file=sys.stderr)
-    print(f"autostart: launched {launched} entr{'y' if launched == 1 else 'ies'}")
+    if not dry_run:
+        print(f"autostart: launched {launched} entr{'y' if launched == 1 else 'ies'}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

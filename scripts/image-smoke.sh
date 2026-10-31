@@ -168,6 +168,32 @@ if [ "${FIRSTBOOT}" = 1 ]; then
 	fi
 fi
 
+# One polkit authentication agent per session: a second one shows "An authentication
+# agent already exists for the given subject" at every login.
+polkit_agents() {
+	local plan agents line f
+	for f in "${ROOT}"/etc/xdg/autostart/*.desktop; do
+		if grep -qiE 'polkit|policykit' "${f}"; then
+			echo "  info  autostart $(basename "${f}"): $(grep -E '^(Exec|OnlyShowIn|NotShowIn|Hidden)=' "${f}" | tr '\n' ' ')"
+		fi
+	done
+	find "${ROOT}/usr/lib/systemd/user" "${ROOT}/etc/systemd/user" -iname '*polkit*' 2> /dev/null | sed "s|^${ROOT}|  info  user unit |"
+	plan="$(chroot "${ROOT}" env XDG_CURRENT_DESKTOP=Genesis:LXDE-pi /usr/bin/genesis-xdg-autostart --dry-run 2>&1 || true)"
+	while IFS= read -r line; do echo "  | ${line}"; done <<< "${plan}"
+	agents="$(grep -ciE '^autostart: would start .*(polkit|policykit)' <<< "${plan}" || true)"
+	if [ "${agents}" -le 1 ]; then
+		echo "  ok    the Genesis session starts ${agents} polkit agent(s)"
+	else
+		echo "  FAIL  the Genesis session would start ${agents} polkit agents"
+		return 1
+	fi
+}
+if ! polkit_agents; then
+	echo "image-smoke: FAIL more than one polkit agent" >&2
+	echo 1 > "${OUT}/result"
+	exit 1
+fi
+
 # Acu Connect client: its own Python must carry it whatever happens to the system's
 acu_connect() {
 	local failures=0 py=/opt/acu-connect/python/bin/python3 out

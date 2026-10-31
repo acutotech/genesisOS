@@ -434,5 +434,63 @@ class SensorIcons(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(icons, "genesis-sensors-symbolic.svg")))
 
 
+def load_autostart():
+    import importlib.machinery
+    import importlib.util
+    path = os.path.join(HERE, "..", "stage-custom", "11-genesis-shell", "files", "session", "genesis-xdg-autostart")
+    loader = importlib.machinery.SourceFileLoader("genesis_xdg_autostart", path)
+    spec = importlib.util.spec_from_loader("genesis_xdg_autostart", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class PolkitAgents(unittest.TestCase):
+    """One polkit authentication agent per session ("An authentication agent already exists")."""
+
+    def setUp(self):
+        self.auto = load_autostart()
+
+    def test_recognises_agents(self):
+        agent = self.auto.is_agent
+        self.assertTrue(agent("lxpolkit.desktop", "lxpolkit"))
+        self.assertTrue(agent("lxpolkit.desktop", "/usr/bin/lwrespawn /usr/bin/lxpolkit"))   # by its file name
+        self.assertTrue(agent("x.desktop", "/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1"))
+        self.assertTrue(agent("polkit-mate-authentication-agent-1.desktop", "/usr/libexec/polkit-mate-authentication-agent-1"))
+        self.assertTrue(agent("lxqt-policykit-agent.desktop", "env QT_X=1 lxqt-policykit-agent"))
+        self.assertFalse(agent("pcmanfm.desktop", "pcmanfm --desktop"))
+        self.assertFalse(agent("polkit-tray.desktop", "some-tray"))
+
+    def test_at_most_one_agent_and_lxpolkit_first(self):
+        entries = [("a-applet.desktop", "applet"),
+                   ("polkit-mate-authentication-agent-1.desktop", "/usr/libexec/polkit-mate-authentication-agent-1"),
+                   ("lxpolkit.desktop", "lxpolkit"),
+                   ("z-tool.desktop", "tool --x")]
+        self.assertEqual(self.auto.choose(entries, False), ["a-applet.desktop", "lxpolkit.desktop", "z-tool.desktop"])
+
+    def test_no_agent_when_one_already_runs(self):
+        entries = [("lxpolkit.desktop", "lxpolkit"), ("tool.desktop", "tool")]
+        self.assertEqual(self.auto.choose(entries, True), ["tool.desktop"])
+
+    def test_a_single_unknown_agent_still_starts(self):
+        entries = [("polkit-gnome-authentication-agent-1.desktop", "/usr/lib/x/polkit-gnome-authentication-agent-1")]
+        self.assertEqual(self.auto.choose(entries, False), ["polkit-gnome-authentication-agent-1.desktop"])
+
+    def test_finds_a_running_agent_of_this_user_and_session(self):
+        with tempfile.TemporaryDirectory() as proc:
+            def process(pid, argv0, session):
+                os.makedirs(os.path.join(proc, pid))
+                with open(os.path.join(proc, pid, "cmdline"), "wb") as fh:
+                    fh.write(argv0.encode() + b"\0--flag\0")
+                with open(os.path.join(proc, pid, "sessionid"), "w") as fh:
+                    fh.write(session)
+            os.symlink(os.path.join(proc, "100"), os.path.join(proc, "self"))
+            process("100", "/usr/bin/genesis-xdg-autostart", "7")
+            process("200", "/usr/bin/lxpolkit", "8")                 # another session
+            self.assertIsNone(self.auto.running_agent(proc))
+            process("300", "/usr/bin/lxpolkit", "7")
+            self.assertEqual(self.auto.running_agent(proc), "lxpolkit")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
