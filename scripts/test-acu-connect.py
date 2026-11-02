@@ -384,9 +384,41 @@ class Supervisor(unittest.TestCase):
         self.start()
         time.sleep(0.6)
         self.assertEqual(self.calls(), [])
-        self.assertIn(f"connects only to {SERVER}, and the link is to https://acu.example.lan", self.output())
+        self.assertIn(f"connects only to {SERVER}, and its link is to another server", self.output())
+        self.assertNotIn("acu.example.lan", self.output())        # the link's text is never printed
         self.link(server=SERVER + "/")                           # sudo acu-connect signin --force
         self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        self.stop()
+
+    def test_a_hostile_link_never_reaches_the_log_or_stops_the_service(self):
+        for text in ('{"server": "\\ud800", "deviceToken": "t"}',      # a lone surrogate
+                     '{"server": "https://x\\nacu-connect-service: forged", "deviceToken": "t"}',
+                     "[" * 60000):                                       # deeper than the parser goes
+            with open(os.path.join(self.config, "agent.json"), "w") as fh:
+                fh.write(text)
+            self.start()
+            time.sleep(0.5)
+            self.assertIsNone(self.proc.poll(), text[:40])
+            self.assertEqual(self.calls(), [])
+            self.assertNotIn("forged", self.output())
+            self.assertIn("connects only to", self.output())
+            self.stop()
+            self.out.close()
+            self.out = None
+
+    def test_a_link_rewritten_in_place_with_its_times_put_back_restarts_the_client(self):
+        self.link("aaaa")
+        self.start()
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        path = os.path.join(self.config, "agent.json")
+        before = os.stat(path)
+        with open(path, "r+") as fh:                             # same size, same inode
+            text = fh.read()
+            fh.seek(0)
+            fh.write(text.replace("aaaa", "bbbb"))
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 2))
+        self.assertEqual(self.calls()[1]["token"], "bbbb")
         self.stop()
 
     def test_an_unreadable_link_is_not_started(self):
@@ -395,7 +427,7 @@ class Supervisor(unittest.TestCase):
         self.start()
         time.sleep(0.6)
         self.assertEqual(self.calls(), [])
-        self.assertIn("an unreadable server", self.output())
+        self.assertIn("its link is unreadable", self.output())
         self.stop()
 
     def test_either_rename_marker_holds_the_client(self):
@@ -472,8 +504,9 @@ class Command(unittest.TestCase):
         self.pending = os.path.join(self.tmp, "rename_user.conf")
         self.enabled = os.path.join(self.tmp, "userconfig.service")
         python = os.path.join(self.tmp, "python3")
-        with open(python, "w") as fh:            # records what the client would get
-            fh.write(f'#!/bin/sh\nenv > "{self.tmp}/env"\nprintf "%s\\n" "$@" > "{self.tmp}/args"\n')
+        with open(python, "w") as fh:            # records what the client would get; runs the command's -c checks
+            fh.write(f'#!/bin/sh\nif [ "$2" = -c ]; then exec python3 "$@"; fi\n'
+                     f'env > "{self.tmp}/env"\nprintf "%s\\n" "$@" > "{self.tmp}/args"\n')
         runuser = os.path.join(self.tmp, "runuser")
         with open(runuser, "w") as fh:           # as root: runuser -u NAME -- COMMAND...
             fh.write(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{self.tmp}/runuser.args"\n'
@@ -553,6 +586,29 @@ class Command(unittest.TestCase):
         for args in (["signin", "--server", SERVER], ["signin", "--server", SERVER + "/", "--force"]):
             self.assertEqual(self.run_command(*args).returncode, 0, args)
             self.assertEqual(self.client_env()["ACU_SERVER"], SERVER)
+
+    def write_link(self, text):
+        with open(os.path.join(self.tmp, "agent.json"), "w") as fh:
+            fh.write(text)
+
+    def test_a_link_to_another_server_is_never_sent_anywhere(self):
+        for text in (json.dumps({"server": "https://acu.example.lan", "deviceToken": "LAN-TOKEN"}), "{broken"):
+            self.write_link(text)
+            result = self.run_command("status")
+            self.assertEqual(result.returncode, 1, text)
+            self.assertIn("link it again with sudo acu-connect signin --force", result.stderr)
+            self.assertNotIn("LAN-TOKEN", result.stderr + result.stdout)
+            self.assertEqual(self.run_command("run", ACU_CONNECT_MANUAL="1").returncode, 1)
+            result = self.run_command("signout")                # removed here, nobody contacted
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("without contacting any server", result.stdout)
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "agent.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "args")))   # the client never ran
+
+    def test_a_link_to_this_server_goes_through(self):
+        self.write_link(json.dumps({"server": SERVER + "/", "deviceToken": "t"}))
+        self.assertEqual(self.run_command("status").returncode, 0)
+        self.assertEqual(self.client_args()[-1], "status")
 
     def test_run_is_refused_the_service_runs_the_client(self):
         result = self.run_command("run")

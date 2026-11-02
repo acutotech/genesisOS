@@ -33,7 +33,7 @@ of the desktop that CI took inside the image before publishing it.
 | Interfaces | I2C, SPI, serial port (UART on GPIO 14/15, Pi 5 `uart0`), SSH, VNC (wayvnc) on; serial console and 1-Wire off | `ENABLE_*` in `custom.conf` |
 | Settings | **Genesis Settings** (interfaces, system, appearance, connectivity, display and sound, software, about) plus Raspberry Pi Configuration | `stage-custom/12-genesis-settings` |
 | Behaviour | persistent journal, automatic security updates, cloud-init seed files on the boot partition, screen blanks after 10 minutes | `custom.conf` |
-| Remote access | **Acu Connect** client (shell and desktop from connect.acutrotech.com, the only server it connects to), on its own Python; starts at boot and waits until the box is linked with `acu-connect signin` | `ACU_CONNECT` in `custom.conf`; `stage-custom/16-acu-connect` |
+| Remote access | **Acu Connect** client (shell and desktop from connect.acutrotech.com, the only Acu Connect server it uses), on its own Python; starts at boot and waits until the box is linked with `acu-connect signin` | `ACU_CONNECT` in `custom.conf`; `stage-custom/16-acu-connect` |
 
 Why these choices, in two sentences each:
 
@@ -322,7 +322,10 @@ else is refused, `ACU_SERVER` is ignored), and the service starts the client
 only for a link to it; a box linked elsewhere waits and says to run
 `sudo acu-connect signin --force`. Since 0.6.0 a session whose browser cannot
 reach the box directly (WebRTC) is relayed through that server, which then
-carries the session itself, not only its setup.
+carries the session itself, not only its setup. Besides that server the client
+looks up the box's approximate location at ipinfo.io every hour (off with
+`ACU_NETWORK_LOCATION=0` in `/etc/default/acu-connect`) and uses the STUN/TURN
+servers the session names for direct WebRTC.
 
 **Linking a box.** A new box is not linked. The service waits (it logs that
 once) until someone runs, as the desktop user or with `sudo`:
@@ -341,7 +344,7 @@ second, unsupervised client. When a box is removed from
 the account, the service sets that link aside
 (`/var/lib/acu-connect/agent.json.revoked`) and waits for a new `signin`
 instead of stopping for good; a revoke of an old link never touches a newer
-one. Settings (server, frame rate, location lookup, input) go in
+one. Settings (frame rate, location lookup, input, a proxy) go in
 `/etc/default/acu-connect` as `NAME=value` lines (a proxy too); then
 `sudo systemctl restart acu-connect`. On the box, `/opt/acu-connect/README.md` sums this up.
 

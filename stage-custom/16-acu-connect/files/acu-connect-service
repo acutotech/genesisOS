@@ -85,7 +85,7 @@ def linked_server():
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
             server = json.loads(fh.read(65537)).get("server")
-    except (OSError, ValueError, AttributeError):
+    except Exception:  # noqa: BLE001 - anything wrong with the file (even RecursionError) means unreadable
         return None
     finally:
         os.close(fd)
@@ -100,7 +100,8 @@ def link():
         return None
     if not stat.S_ISREG(st.st_mode):
         return None
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    # ctime too: the file's owner can put size and mtime back, not ctime
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 def held():
@@ -297,8 +298,9 @@ def main():
         elif user is None:
             why = f"there is no user with uid {UID}; waiting for one"
         elif (server := linked_server()) != SERVER:
-            why = (f"this box connects only to {SERVER}, and the link is to {server or 'an unreadable server'}: "
-                   "link it again with sudo acu-connect signin --force")
+            # the link's own text is never printed: it is the desktop user's file
+            why = (f"this box connects only to {SERVER}, and its link is "
+                   f"{'to another server' if server else 'unreadable'}: link it again with sudo acu-connect signin --force")
         else:
             why = None
         if why:

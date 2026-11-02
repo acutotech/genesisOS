@@ -104,6 +104,45 @@ if [ ! -x "${PYTHON}" ]; then
 	echo "acu-connect: ${PYTHON} is missing; reinstall Genesis OS's acu-connect" >&2
 	exit 1
 fi
+
+# A link to another server (made before the server was fixed, or by hand) is never sent
+# anywhere: status and signout would hand its device token to this server. Only "same",
+# "other" or "unreadable" comes back, never the link's own text.
+link_state() {
+	"${PYTHON}" -I -c '
+import json, os, stat, sys
+path = os.path.join(sys.argv[1], "agent.json")
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except OSError:
+    sys.exit(0)
+with os.fdopen(fd, "rb") as fh:
+    try:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            raise ValueError
+        server = json.loads(fh.read(65537)).get("server")
+    except Exception:
+        print("unreadable")
+        sys.exit(0)
+print("same" if isinstance(server, str) and server.rstrip("/") == sys.argv[2] else "other")
+' "${ACU_CONFIG_DIR}" "${SERVER}" 2> /dev/null || echo unreadable
+}
+case "${command}" in
+	status | signout | run)
+		state="$(link_state)"
+		if [ "${state}" = other ] || [ "${state}" = unreadable ]; then
+			if [ "${command}" = signout ]; then
+				rm -f "${ACU_CONFIG_DIR}/agent.json"
+				echo "Removed the local link (to another server, or unreadable) without contacting any server."
+				exit 0
+			fi
+			echo "acu-connect: this box connects only to ${SERVER}, and its link is to another server (or unreadable):" >&2
+			echo "acu-connect: link it again with sudo acu-connect signin --force" >&2
+			exit 1
+		fi
+		;;
+esac
 if [ "$(id -u)" = 0 ]; then
 	user="$(getent passwd "${DESKTOP_UID}" | cut -d: -f1)"
 	if [ -n "${user}" ]; then

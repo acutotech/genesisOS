@@ -40,6 +40,11 @@ NATIVE=0
 # Every knob of stage-custom/custom.conf (the VAR="${VAR:-default}" lines) may be
 # overridden from the environment; the list is derived so it cannot go stale.
 mapfile -t FORWARDED_VARS < <(sed -nE 's/^([A-Z_]+)="\$\{\1:-.*/\1/p' "${STAGE_DIR}/custom.conf")
+# a removed knob must not be dropped silently (16-acu-connect stops on it too)
+if [ -n "${ACU_CONNECT_SERVER:-}" ]; then
+	echo "error: ACU_CONNECT_SERVER is gone: the box always connects to https://connect.acutrotech.com" >&2
+	exit 1
+fi
 
 usage() {
 	sed -n '2,/^set -euo pipefail/{/^set -euo pipefail/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
