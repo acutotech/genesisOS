@@ -23,7 +23,8 @@ Environment=ACU_CONFIG_DIR=/var/lib/acu-connect
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=DISPLAY=:0
-# settings (ACU_SERVER, ACU_SCREEN_FPS, ACU_NETWORK_LOCATION=0, ...): they override the above
+# settings (ACU_SCREEN_FPS, ACU_NETWORK_LOCATION=0, a proxy, ...): they override the above;
+# the server is fixed to https://connect.acutrotech.com (see acu-connect-service)
 EnvironmentFile=-/etc/default/acu-connect
 
 [Install]

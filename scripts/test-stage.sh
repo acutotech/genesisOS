@@ -320,7 +320,12 @@ assert_grep '^ExecStart=/usr/lib/acu-connect/acu-connect-service$' "${ACUUNIT}"
 assert_grep '^After=network-online.target genesis-firstboot.service userconfig.service$' "${ACUUNIT}"
 assert_grep '^WantedBy=multi-user.target$' "${ACUUNIT}"
 assert_no_grep 'RestartPreventExitStatus' "${ACUUNIT}"
-assert_grep '^#ACU_SERVER=' "${ROOTFS_DIR}/etc/default/acu-connect"
+# always connect.acutrotech.com: pinned in the service and the command, settable nowhere
+assert_no_grep '^ *#? *ACU_SERVER=' "${ROOTFS_DIR}/etc/default/acu-connect"
+assert_grep '^SERVER = "https://connect\.acutrotech\.com"' "${ROOTFS_DIR}/usr/lib/acu-connect/acu-connect-service"
+assert_grep '^SERVER=https://connect\.acutrotech\.com$' "${ROOTFS_DIR}/usr/bin/acu-connect"
+assert_grep '^export ACU_SERVER="\$\{SERVER\}"$' "${ROOTFS_DIR}/usr/bin/acu-connect"
+assert_no_grep 'ACU_CONNECT_SERVER' "${STAGE_DIR}/custom.conf"
 assert_grep 'cpython-3\.14\.9\+20261021-aarch64-unknown-linux-gnu-install_only_stripped\.tar\.gz' "${CHROOT_LOG}"
 # shellcheck disable=SC2016  # the chroot log holds the literal heredoc text
 assert_grep '^echo "6f77731d85a14ed848dd4041478cd3ed511523caa3d896b84b436a7edf13cf62  \$tmp/python.tgz" \| sha256sum -c -$' "${CHROOT_LOG}"
@@ -340,7 +345,6 @@ export GENESIS_WALLPAPER=genesis-aurora GENESIS_PANEL_POSITION=bottom GENESIS_PA
 export DEFAULT_BROWSER=firefox ENABLE_VNC=0 DESKTOP_AUTOLOGIN=0 INSTALL_VSCODE=0
 export ENABLE_SERVICES='hello-custom.service' DISABLE_SERVICES='bluetooth.service hciuart.service'
 export PERSISTENT_JOURNAL=0 ENABLE_UNATTENDED_UPGRADES=0
-export ACU_CONNECT_SERVER=https://connect.example.test
 printf 'CUSTOM_GIT_SHA=abc123\nCUSTOM_GIT_REF=main\nCUSTOM_BUILD_URL=https://example.test/run/1\nPASSWORDLESS_SUDO=1\n' > "${STAGE_DIR}/build-info.env"
 run_stage
 rm -f "${STAGE_DIR}/build-info.env"
@@ -430,8 +434,6 @@ else
 	assert_grep '"Café \\"Net\\" \\\\ 5G":' "${NETCFG}"
 fi
 
-assert_grep '^ACU_SERVER=https://connect.example.test$' "${ROOTFS_DIR}/etc/default/acu-connect"
-
 # ===================================================================================
 echo "Scenario 3: running the stage twice does not duplicate config.txt lines"
 run_stage
@@ -513,17 +515,8 @@ acu_bad() { # knob=value, then the message the build must stop with
 	fi
 }
 acu_bad ACU_CONNECT=2 'is not 0 or 1'
-acu_bad ACU_CONNECT_SERVER=http://connect.example.test 'is not a plain https:// URL'
-# characters sed's s||| or the shell would take: the check must catch them, not a later failure
-acu_bad 'ACU_CONNECT_SERVER=https://x|y' 'is not a plain https:// URL'
-acu_bad 'ACU_CONNECT_SERVER=https://x.example/?a=1' 'is not a plain https:// URL'
-acu_bad 'ACU_CONNECT_SERVER=https://x.example/&' 'is not a plain https:// URL'
-acu_bad 'ACU_CONNECT_SERVER=https://x.example/ a' 'is not a plain https:// URL'
-reset_knobs
-make_rootfs
-export ACU_CONNECT_SERVER=https://connect.example.test:8443/acu
-run_stage
-assert_grep '^ACU_SERVER=https://connect\.example\.test:8443/acu$' "${ROOTFS_DIR}/etc/default/acu-connect"
+# the old setting for another server stops the build instead of being ignored
+acu_bad ACU_CONNECT_SERVER=https://acu.example.lan 'always connects to https://connect.acutrotech.com'
 
 # ===================================================================================
 echo

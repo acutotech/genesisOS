@@ -4,6 +4,7 @@ from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSession
 from aiortc.sdp import candidate_from_sdp
 
 from .recorder import Recorder
+from .relay import Flow, RelayChannel
 from .screen import Screen
 from .shell import Shell
 
@@ -32,9 +33,11 @@ def parse_candidate(line, mid):
 
 
 class Session:
-    """One remote session: the client is the WebRTC offerer and owns the data channels."""
+    """One remote session: the client is the WebRTC offerer and owns the data channels.
+    If the browser can't reach this device directly, it asks for the same channels
+    to go through the server instead (see relay.py)."""
 
-    def __init__(self, id, kind, ice_servers, user, control, record, signal, on_close, log):
+    def __init__(self, id, kind, ice_servers, user, control, record, signal, on_close, log, send=None):
         self.id = id
         self.kind = kind
         self.signal = signal
@@ -46,6 +49,10 @@ class Session:
         self.control = control
         self.recorder = Recorder(record) if record else None
         self.signals = asyncio.Queue()
+        self.send = send
+        self.relayed = False
+        self.relay_channels = {}
+        self.flow = None
 
         email = user.get("email") if user else "unknown"
         mode = (" (control)" if control else " (view only)") if kind == "screen" else ""
@@ -63,6 +70,8 @@ class Session:
         self.worker = asyncio.create_task(self.negotiate())
 
     def state_changed(self):
+        if self.relayed:
+            return
         state = self.pc.connectionState
         self.log(f"peer connection {state}")
         if state == "connected":
@@ -71,10 +80,47 @@ class Session:
             self.close(f"peer {state}")
 
     def channel(self, label):
-        dc = self.pc.createDataChannel(label)
+        if self.relayed:
+            dc = RelayChannel(label, self.id, self.send, self.flow)
+            self.relay_channels[label] = dc
+        else:
+            dc = self.pc.createDataChannel(label)
         self.channels.append(dc)
-        dc.on("close", lambda: self.close(f"{label} channel closed"))
+        relayed = self.relayed
+        dc.on("close", lambda: self.relayed == relayed and self.close(f"{label} channel closed"))
         return dc
+
+    def start_relay(self):
+        """Switches to channels carried by the server, as long as nothing has started
+        over the direct connection."""
+        if self.closed or self.relayed or self.handlers or not self.send:
+            return
+        self.relayed = True
+        self.connect_timer.cancel()
+        self.worker.cancel()
+        self.channels = []
+        asyncio.create_task(self.pc.close())
+        self.flow = Flow()
+        self.log("no direct connection: relaying through the server")
+        # Tell the browser first: everything the channels send follows this message.
+        self.send({"type": "relay.ready", "sessionId": self.id})
+        if self.kind == "shell":
+            self.open_shell()
+        else:
+            self.open_screen()
+        for channel in list(self.relay_channels.values()):
+            channel.open()
+
+    def relay_message(self, msg):
+        kind = msg.get("type")
+        if kind == "session.relay":
+            self.start_relay()
+        elif kind == "relay" and self.relayed:
+            channel = self.relay_channels.get(msg.get("label"))
+            if channel:
+                channel.deliver(msg)
+        elif kind == "relay.ack" and self.flow:
+            self.flow.ack(msg.get("bytes"))
 
     def open_shell(self):
         dc = self.channel("shell")
@@ -136,6 +182,8 @@ class Session:
         self.log(f"closing: {reason}")
         for handler in self.handlers:
             handler.close()
+        for channel in list(self.relay_channels.values()):
+            channel.close()
         # Send the last recorded output before the session-end message.
         if self.recorder:
             self.recorder.flush()

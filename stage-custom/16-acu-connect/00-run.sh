@@ -33,8 +33,10 @@ if [ "${ARCH:-arm64}" != "arm64" ]; then
 	log "Acu Connect: its Python is only pinned for arm64 (ARCH=${ARCH}); not installed"
 	exit 0
 fi
-if [ -n "${ACU_CONNECT_SERVER}" ] && ! [[ "${ACU_CONNECT_SERVER}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
-	echo "16-acu-connect: ACU_CONNECT_SERVER=${ACU_CONNECT_SERVER} is not a plain https:// URL" >&2
+# The server is fixed (acu-connect-service and acu-connect pin it); an old setting
+# for another one must not be silently ignored.
+if [ -n "${ACU_CONNECT_SERVER:-}" ]; then
+	echo "16-acu-connect: ACU_CONNECT_SERVER is gone: the box always connects to https://connect.acutrotech.com" >&2
 	exit 1
 fi
 
@@ -58,9 +60,6 @@ install -D -m 755 files/acu-connect-service "${ROOTFS_DIR}/usr/lib/acu-connect/a
 install -D -m 755 files/acu-connect "${ROOTFS_DIR}/usr/bin/acu-connect"
 install -D -m 644 files/acu-connect.service "${ROOTFS_DIR}/usr/lib/systemd/system/acu-connect.service"
 install -D -m 644 files/acu-connect.default "${ROOTFS_DIR}/etc/default/acu-connect"
-if [ -n "${ACU_CONNECT_SERVER}" ]; then
-	sed -i "s|^#ACU_SERVER=.*|ACU_SERVER=${ACU_CONNECT_SERVER}|" "${ROOTFS_DIR}/etc/default/acu-connect"
-fi
 
 on_chroot << EOF
 set -e

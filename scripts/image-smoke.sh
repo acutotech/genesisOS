@@ -221,8 +221,10 @@ acu_connect() {
 	echo "  info  $(chroot "${ROOT}" "${py}" -I -c 'import sys, acu_connect; print("acu-connect", acu_connect.VERSION, "on Python", sys.version.split()[0])' 2>&1)"
 	# What an apt upgrade to another Python version, or removing python3, leaves: no system Python.
 	# Hidden in a private mount namespace, so nothing is changed outside it. Then the real
-	# command and the real client, linked to a server that is not there.
-	out="$(unshare --mount --propagation private bash -s "${ROOT}" "${py}" << 'HIDE' 2>&1
+	# command and the real client, with a made-up link to connect.acutrotech.com (the only
+	# server the image accepts) in a network namespace of their own: CI never reaches the
+	# real server, and the client's connection attempts fail at once.
+	out="$(unshare --mount --net --propagation private bash -s "${ROOT}" "${py}" << 'HIDE' 2>&1
 root="$1"; py="$2"
 for f in "${root}"/usr/bin/python3*; do [ -f "${f}" ] && [ ! -L "${f}" ] && mount --bind /dev/null "${f}"; done
 for d in "${root}"/usr/lib/python3*; do [ -d "${d}" ] && mount -t tmpfs none "${d}"; done
@@ -231,7 +233,7 @@ chroot "${root}" "${py}" -I -c 'import aiortc, av, cryptography, websockets, acu
 chroot "${root}" env ACU_CONFIG_DIR=/tmp/acu-smoke "${py}" -I -m acu_connect status | grep -q 'Not linked' && echo "OK status"
 link=/tmp/acu-link
 mkdir -m 700 "${root}${link}"
-printf '{"server": "http://127.0.0.1:9", "deviceToken": "smoke", "name": "smoke-box", "deviceId": "smoke-id"}\n' > "${root}${link}/agent.json"
+printf '{"server": "https://connect.acutrotech.com", "deviceToken": "smoke", "name": "smoke-box", "deviceId": "smoke-id"}\n' > "${root}${link}/agent.json"
 chmod 600 "${root}${link}/agent.json"
 chown -R 1000:1000 "${root}${link}"
 # root without sbin in PATH (cron, env -i): the command still reaches uid 1000's link

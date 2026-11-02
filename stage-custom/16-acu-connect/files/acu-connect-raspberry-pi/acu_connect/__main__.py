@@ -99,6 +99,15 @@ def log(message):
     out(f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}Z {message}")
 
 
+def quiet_closed_socket_retries(loop, context):
+    """aioice keeps retrying a connectivity check after its session has closed, and
+    each retry fails on the closed socket. Harmless, but it filled the log with
+    tracebacks. Everything else is reported as usual."""
+    if isinstance(context.get("exception"), AttributeError) and "Transaction.__retry" in repr(context.get("handle")):
+        return
+    loop.default_exception_handler(context)
+
+
 async def run_agent():
     from .daemon import Agent  # needs the installed packages; the other commands don't
 
@@ -107,6 +116,7 @@ async def run_agent():
         raise RuntimeError('this device is not linked yet; run "acu-connect signin" first')
     agent = Agent(config["server"], config["deviceToken"], log)
     loop = asyncio.get_running_loop()
+    loop.set_exception_handler(quiet_closed_socket_retries)
     stopping = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stopping.set)

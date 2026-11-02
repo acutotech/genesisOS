@@ -25,6 +25,9 @@ here except for what the client does.
   reboot, since the wizard on the screen keeps running until then.
 - `signin --force` (link again) and `signout` take effect at once: the service
   restarts or stops the client by itself.
+- The server is always https://connect.acutrotech.com: `signin` links nowhere
+  else, and the service starts the client only for a link to it. A session the
+  browser cannot reach directly is relayed through that server.
 - When the box is removed from the account, the link is kept as
   `/var/lib/acu-connect/agent.json.revoked` and the service waits for a new
   `signin`.

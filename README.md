@@ -33,7 +33,7 @@ of the desktop that CI took inside the image before publishing it.
 | Interfaces | I2C, SPI, serial port (UART on GPIO 14/15, Pi 5 `uart0`), SSH, VNC (wayvnc) on; serial console and 1-Wire off | `ENABLE_*` in `custom.conf` |
 | Settings | **Genesis Settings** (interfaces, system, appearance, connectivity, display and sound, software, about) plus Raspberry Pi Configuration | `stage-custom/12-genesis-settings` |
 | Behaviour | persistent journal, automatic security updates, cloud-init seed files on the boot partition, screen blanks after 10 minutes | `custom.conf` |
-| Remote access | **Acu Connect** client (shell and desktop from connect.acutrotech.com), on its own Python; starts at boot and waits until the box is linked with `acu-connect signin` | `ACU_CONNECT`, `ACU_CONNECT_SERVER` in `custom.conf`; `stage-custom/16-acu-connect` |
+| Remote access | **Acu Connect** client (shell and desktop from connect.acutrotech.com, the only server it connects to), on its own Python; starts at boot and waits until the box is linked with `acu-connect signin` | `ACU_CONNECT` in `custom.conf`; `stage-custom/16-acu-connect` |
 
 Why these choices, in two sentences each:
 
@@ -316,6 +316,14 @@ USER` and a reboot). The screen tools it uses (`grim`,
 `ffmpeg`, `wtype`, `wlrctl`, `xdotool`, ...) are optional: if an upgrade
 removes one, desktop sharing loses that ability and the rest keeps working.
 
+**Always connect.acutrotech.com.** The server is fixed in the service and in
+the `acu-connect` command: `signin` links only there (`--server` with anything
+else is refused, `ACU_SERVER` is ignored), and the service starts the client
+only for a link to it; a box linked elsewhere waits and says to run
+`sudo acu-connect signin --force`. Since 0.6.0 a session whose browser cannot
+reach the box directly (WebRTC) is relayed through that server, which then
+carries the session itself, not only its setup.
+
 **Linking a box.** A new box is not linked. The service waits (it logs that
 once) until someone runs, as the desktop user or with `sudo`:
 
@@ -373,7 +381,7 @@ know, so nothing can apply to one build path only. Keep secrets out of it.
 | `PERSISTENT_JOURNAL`, `JOURNAL_MAX_USE` | journald storage |
 | `ENABLE_UNATTENDED_UPGRADES` | automatic updates from Debian security and the Raspberry Pi archive |
 | `ENABLE_SERVICES`, `DISABLE_SERVICES` | systemd units to `enable` / `disable` in the image |
-| `ACU_CONNECT`, `ACU_CONNECT_SERVER` | Acu Connect client installed (`1`) or not; the server `acu-connect signin` links to |
+| `ACU_CONNECT` | Acu Connect client installed (`1`) or not. It always connects to https://connect.acutrotech.com; an old `ACU_CONNECT_SERVER` stops the build |
 
 Every knob can also be set as an environment variable for a local build
 (`ENABLE_I2C=1 make build`). Secrets go in `stage-custom/secrets.env`

@@ -6,6 +6,8 @@
 # python3. The link is kept in /var/lib/acu-connect, owned by the desktop user
 # (uid 1000) the client runs as, so root's commands run as that user too.
 set -e
+# the only server this box connects to (acu-connect-service holds the same)
+SERVER=https://connect.acutrotech.com
 PYTHON=/opt/acu-connect/python/bin/python3
 DEFAULTS=/etc/default/acu-connect
 # present while a rename of the desktop user is pending (the same as acu-connect-service)
@@ -45,23 +47,45 @@ if [ -r "${DEFAULTS}" ]; then
 	done < "${DEFAULTS}"
 fi
 export ACU_CONFIG_DIR="${ACU_CONFIG_DIR:-/var/lib/acu-connect}"
+export ACU_SERVER="${SERVER}"
 
-# the command, found the way the client finds it (an --option takes the next word as its value)
+# The command and any --server, found the way the client parses its arguments: an
+# --option takes the next word as its value unless that word is an option too.
 command=""
-value_next=""
+option=""
+server_given=""
+server_ok=1
 for arg in "$@"; do
-	if [ -n "${value_next}" ]; then
-		value_next=""
+	if [ -n "${option}" ]; then
+		previous="${option}"
+		option=""
 		case "${arg}" in
 			--*) ;;
-			*) continue ;;
+			*)
+				if [ "${previous}" = --server ] && [ "${arg%/}" != "${SERVER}" ]; then
+					server_ok=""
+				fi
+				continue
+				;;
 		esac
+		if [ "${previous}" = --server ]; then
+			server_ok=""
+		fi
 	fi
 	case "${arg}" in
-		--*) value_next=1 ;;
-		*) command="${arg}"; break ;;
+		--server) server_given=1; option="${arg}" ;;
+		--server=*) server_given=1; server_ok="" ;;
+		--*) option="${arg}" ;;
+		*) if [ -z "${command}" ]; then command="${arg}"; fi ;;
 	esac
 done
+if [ "${option}" = --server ]; then
+	server_ok=""
+fi
+if [ -n "${server_given}" ] && [ -z "${server_ok}" ]; then
+	echo "acu-connect: this box connects only to ${SERVER}" >&2
+	exit 1
+fi
 if [ "${command}" = run ] && [ "${ACU_CONNECT_MANUAL:-}" != 1 ]; then
 	echo "acu-connect: the client already runs as acu-connect.service (systemctl status acu-connect);" >&2
 	echo "acu-connect: a second one would not follow signin --force or signout. Ignore signin's \"acu-connect run\"." >&2

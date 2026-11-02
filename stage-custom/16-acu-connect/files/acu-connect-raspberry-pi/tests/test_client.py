@@ -10,6 +10,8 @@ from unittest import mock
 from acu_connect import DEFAULT_SERVER, config
 from acu_connect.__main__ import parse_args, server_url
 from acu_connect.recorder import Recorder
+from acu_connect.relay import Flow, RelayChannel
+from acu_connect.transport import MAX_BATCH_CHARS, Outbox
 from acu_connect.screen import Input, Screen, Shared, Wlroots, Xdotool, Ydotool, is_printable, jpeg_size, pick_virtual_output
 from acu_connect.session import parse_candidate, to_ice_servers
 from acu_connect.shell import Shell
@@ -125,6 +127,10 @@ class Pure(unittest.TestCase):
             config.save_config({"server": "x", "deviceToken": "secret"})
             self.assertEqual(config.load_config()["deviceToken"], "secret")
             self.assertEqual(os.stat(config.config_file()).st_mode & 0o777, 0o600)
+            with mock.patch.object(config.os, "fsync", wraps=os.fsync) as synced:
+                config.save_config({"server": "x", "deviceToken": "secret2"})
+            self.assertEqual(synced.call_count, 2, "the file and its folder reach the disk")
+            self.assertFalse(config.config_file().with_suffix(".json.tmp").exists())
             config.delete_config()
             self.assertIsNone(config.load_config())
 
@@ -288,6 +294,117 @@ class Async(unittest.IsolatedAsyncioTestCase):
             if shell.proc.poll() is not None:
                 break
         self.assertIsNotNone(shell.proc.poll())
+
+
+class Noise(unittest.TestCase):
+    def test_only_the_closed_socket_retry_is_silenced(self):
+        from acu_connect.__main__ import quiet_closed_socket_retries
+
+        loop = mock.Mock()
+
+        class Handle:
+            def __repr__(self):
+                return "<TimerHandle when=1 Transaction.__retry()>"
+
+        quiet_closed_socket_retries(loop, {"exception": AttributeError("x"), "handle": Handle()})
+        loop.default_exception_handler.assert_not_called()
+        quiet_closed_socket_retries(loop, {"exception": ValueError("real problem"), "handle": Handle()})
+        quiet_closed_socket_retries(loop, {"exception": AttributeError("elsewhere"), "handle": "<Handle other()>"})
+        self.assertEqual(loop.default_exception_handler.call_count, 2)
+
+
+class Relay(unittest.IsolatedAsyncioTestCase):
+    async def test_channel_sends_text_and_binary_and_counts_what_is_in_flight(self):
+        sent, flow = [], Flow()
+        ch = RelayChannel("screen", "s1", sent.append, flow)
+        ch.send("dropped: not open yet")
+        opened = []
+        ch.on("open", lambda: opened.append(True))
+        ch.open()
+        ch.send('{"t":"frame","size":3}')
+        ch.send(b"\x00\xff\x10")
+        self.assertEqual(opened, [True])
+        self.assertEqual(sent[0], {"type": "relay", "sessionId": "s1", "label": "screen", "n": 22, "text": '{"t":"frame","size":3}'})
+        self.assertEqual(sent[1], {"type": "relay", "sessionId": "s1", "label": "screen", "n": 3, "bin": "AP8Q"})
+        self.assertEqual(ch.bufferedAmount, 25)
+
+    async def test_acks_free_the_channel_and_wake_a_paused_sender(self):
+        flow = Flow()
+        ch = RelayChannel("shell", "s1", lambda m: None, flow)
+        ch.bufferedAmountLowThreshold = 10
+        woken = []
+        ch.on("bufferedamountlow", lambda: woken.append(True))
+        ch.open()
+        ch.send("x" * 30)
+        flow.ack(15)
+        self.assertEqual((ch.bufferedAmount, woken), (15, []))
+        flow.ack(15)
+        self.assertEqual((ch.bufferedAmount, woken), (0, [True]))
+        flow.ack("junk")
+        flow.ack(-50)
+        self.assertEqual(ch.bufferedAmount, 0)
+
+    async def test_incoming_text_reaches_the_handler_and_close_is_reported_once(self):
+        ch = RelayChannel("input", "s1", lambda m: None, Flow())
+        got, closed = [], []
+        ch.on("message", got.append)
+        ch.on("close", lambda: closed.append(True))
+        ch.deliver({"text": "before open"})
+        ch.open()
+        ch.deliver({"text": '{"t":"move"}'})
+        ch.deliver({"bin": "AAAA"})
+        ch.close()
+        ch.close()
+        ch.deliver({"text": "after close"})
+        self.assertEqual((got, closed), (['{"t":"move"}'], [True]))
+
+    async def test_session_switches_to_the_relay_and_runs_the_desktop_over_it(self):
+        from acu_connect import session as session_module
+
+        sent, closed = [], []
+        with mock.patch.object(session_module, "Screen") as screen:
+            s = session_module.Session("abc12345", "screen", [], {"email": "a@example.com"}, True, None, lambda d: None, closed.append, lambda m: None, sent.append)
+            s.relay_message({"type": "relay", "label": "input", "text": "{}"})  # ignored: not relaying yet
+            s.relay_message({"type": "session.relay"})
+            s.relay_message({"type": "session.relay"})  # a repeat changes nothing
+            await asyncio.sleep(0.05)
+            self.assertTrue(s.relayed)
+            self.assertEqual(sent[0], {"type": "relay.ready", "sessionId": "abc12345"})
+            self.assertEqual(screen.call_count, 1, "the desktop starts once, over the relay")
+            screen_dc, input_dc = screen.call_args.args[:2]
+            self.assertIsInstance(screen_dc, RelayChannel)
+            self.assertEqual((screen_dc.label, input_dc.label, screen_dc.readyState), ("screen", "input", "open"))
+            s.state_changed()  # the closed WebRTC connection doesn't end a relayed session
+            self.assertEqual(closed, [])
+            s.close("ended by user")
+            self.assertEqual(closed, ["ended by user"])
+            self.assertEqual(screen_dc.readyState, "closed")
+
+    async def test_a_session_already_running_directly_is_not_switched(self):
+        from acu_connect import session as session_module
+
+        sent = []
+        s = session_module.Session("abc12345", "shell", [], None, False, None, lambda d: None, lambda r: None, lambda m: None, sent.append)
+        s.handlers.append(mock.Mock())
+        s.relay_message({"type": "session.relay"})
+        self.assertFalse(s.relayed)
+        self.assertEqual(sent, [])
+        s.close("done")
+
+    async def test_long_poll_batches_stay_under_the_server_limit(self):
+        batches = []
+
+        async def deliver(batch):
+            batches.append(batch)
+
+        out = Outbox(deliver)
+        chunk = "x" * (100 * 1024)
+        for _ in range(15):
+            out.send(chunk)
+        await asyncio.sleep(0.05)
+        self.assertEqual(sum(len(b) for b in batches), 15)
+        self.assertTrue(all(sum(map(len, b)) <= MAX_BATCH_CHARS for b in batches))
+        self.assertGreater(len(batches), 2)
 
 
 if __name__ == "__main__":

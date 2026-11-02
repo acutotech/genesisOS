@@ -121,6 +121,10 @@ class Agent:
             session = self.sessions.get(msg.get("sessionId"))
             if session:
                 session.close("ended by user")
+        elif kind in ("session.relay", "relay", "relay.ack"):
+            session = self.sessions.get(msg.get("sessionId"))
+            if session:
+                session.relay_message(msg)
 
     def start_session(self, msg):
         session_id = msg.get("sessionId")
@@ -137,7 +141,7 @@ class Agent:
         signal = lambda data: self.send({"type": "signal", "sessionId": session_id, "data": data})  # noqa: E731
         try:
             self.sessions[session_id] = Session(
-                session_id, msg["kind"], msg.get("iceServers"), msg.get("user"), msg.get("control") is True, record, signal, on_close, self.log
+                session_id, msg["kind"], msg.get("iceServers"), msg.get("user"), msg.get("control") is True, record, signal, on_close, self.log, self.send
             )
         except Exception as e:
             self.send({"type": "session.error", "sessionId": session_id, "message": str(e)})

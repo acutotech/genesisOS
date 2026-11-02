@@ -35,6 +35,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVICE = os.path.join(HERE, "..", "stage-custom", "16-acu-connect", "files", "acu-connect-service")
 WRAPPER = os.path.join(HERE, "..", "stage-custom", "16-acu-connect", "files", "acu-connect")
+SERVER = "https://connect.acutrotech.com"     # the only server the image connects to
 LOCK_TOOL = os.path.join(HERE, "acu-connect-lock.py")
 
 STUB = r'''#!/usr/bin/env python3
@@ -62,7 +63,8 @@ elif step == "stubborn":          # ignores SIGTERM
 with open(os.path.join(work, "calls.jsonl"), "a") as fh:
     fh.write(json.dumps({"argv": sys.argv[1:], "wayland": os.environ.get("WAYLAND_DISPLAY"),
                          "config": os.environ.get("ACU_CONFIG_DIR"), "token": token, "pid": os.getpid(),
-                         "uid": os.getuid(), "home": os.environ.get("HOME"), "env": sorted(os.environ)}) + "\n")
+                         "uid": os.getuid(), "home": os.environ.get("HOME"), "env": sorted(os.environ),
+                         "server": os.environ.get("ACU_SERVER")}) + "\n")
 if step in ("serve", "stubborn"):
     while True:
         time.sleep(0.05)
@@ -72,7 +74,7 @@ if step == "signout2":            # signout removed the link, and the server dro
 if step == "relink2":             # signin --force landed just as the old link was revoked
     tmp = config + ".tmp"
     with open(tmp, "w") as fh:
-        json.dump({"server": "https://example.test", "deviceToken": "new"}, fh)
+        json.dump({"server": "https://connect.acutrotech.com", "deviceToken": "new"}, fh)
     os.replace(tmp, config)
     sys.exit(2)
 sys.exit(int(step))
@@ -159,11 +161,11 @@ class Supervisor(unittest.TestCase):
         else:
             os.rmdir(path)
 
-    def link(self, token="t"):
+    def link(self, token="t", server=SERVER):
         """What acu-connect signin does: the new agent.json replaces the old one in one step."""
         tmp = os.path.join(self.config, "agent.json.tmp")
         with open(tmp, "w") as fh:
-            json.dump({"server": "https://example.test", "deviceToken": token}, fh)
+            json.dump({"server": server, "deviceToken": token}, fh)
         os.replace(tmp, os.path.join(self.config, "agent.json"))
 
     def terminated(self):
@@ -373,7 +375,27 @@ class Supervisor(unittest.TestCase):
         env = self.calls()[0]["env"]
         for name in ("INVOCATION_ID", "JOURNAL_STREAM", "PYTHONUNBUFFERED", "ACU_CONNECT_POLL", "ACU_CONNECT_CLIENT"):
             self.assertNotIn(name, env)
-        self.assertIn("ACU_SERVER", env)                         # the client's own settings pass through
+        self.assertIn("ACU_SERVER", env)
+        self.assertEqual(self.calls()[0]["server"], SERVER)     # whatever the settings say
+        self.stop()
+
+    def test_a_link_to_another_server_is_not_started(self):
+        self.link(server="https://acu.example.lan")              # linked before, or by hand
+        self.start()
+        time.sleep(0.6)
+        self.assertEqual(self.calls(), [])
+        self.assertIn(f"connects only to {SERVER}, and the link is to https://acu.example.lan", self.output())
+        self.link(server=SERVER + "/")                           # sudo acu-connect signin --force
+        self.assertTrue(wait_for(lambda: len(self.calls()) == 1))
+        self.stop()
+
+    def test_an_unreadable_link_is_not_started(self):
+        with open(os.path.join(self.config, "agent.json"), "w") as fh:
+            fh.write("{not json")
+        self.start()
+        time.sleep(0.6)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("an unreadable server", self.output())
         self.stop()
 
     def test_either_rename_marker_holds_the_client(self):
@@ -492,9 +514,9 @@ class Command(unittest.TestCase):
             return fh.read().split("\n")[:-1]
 
     def test_settings_are_read_as_systemd_reads_them_not_run(self):
-        result = self.run_command("status", defaults=(
+        result = self.run_command("status", ACU_SERVER="https://caller.example", defaults=(
             "# a comment\n"
-            "#ACU_SERVER=https://commented.example\n"
+            "ACU_SERVER=https://elsewhere.example\n"
             "ACU_A=https://a.example  \n"              # trailing blanks
             "ACU_B=https://b.example\r\n"             # CRLF
             "ACU_C = https://c.example\n"              # blanks around =
@@ -515,10 +537,22 @@ class Command(unittest.TestCase):
                            ("ACU_G", "grim -t jpeg -"), ("HTTPS_PROXY", "http://proxy.example:3128"),
                            ("ACU_LAST", "no-newline")):
             self.assertEqual(env.get(name), want, name)
-        self.assertNotIn("ACU_SERVER", env)
+        self.assertEqual(env["ACU_SERVER"], SERVER)              # never the file's or the caller's
         self.assertNotIn("ACU_BAD-NAME", env)
         self.assertNotIn("/evil", env["PATH"])
         self.assertEqual(self.client_args(), ["-I", "-m", "acu_connect", "status"])
+
+    def test_only_the_one_server_can_be_named(self):
+        for args in (["signin", "--server", "https://acu.example.lan"], ["--server", "https://evil.example", "signin"],
+                     ["status", "--server", "http://connect.acutrotech.com"], ["signin", "--server"],
+                     ["signin", "--server", "--force"], ["signin", "--server=https://acu.example.lan"]):
+            result = self.run_command(*args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn(f"connects only to {SERVER}", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "args")))
+        for args in (["signin", "--server", SERVER], ["signin", "--server", SERVER + "/", "--force"]):
+            self.assertEqual(self.run_command(*args).returncode, 0, args)
+            self.assertEqual(self.client_env()["ACU_SERVER"], SERVER)
 
     def test_run_is_refused_the_service_runs_the_client(self):
         result = self.run_command("run")

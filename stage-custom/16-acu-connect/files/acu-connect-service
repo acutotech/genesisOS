@@ -20,12 +20,15 @@ The service itself runs as root and starts the client as the desktop user (uid
     the client's own remote shells, and the rename happens after a reboot;
   - not with a link other than the one it started with: `acu-connect signin
     --force` or `signout` take effect at once, and a revoke reported by the old
-    client never sets aside a new link.
+    client never sets aside a new link;
+  - only for a link to https://connect.acutrotech.com: Genesis OS always connects
+    there (the acu-connect command links nowhere else either).
 
 It runs on Genesis OS's own Python (/opt/acu-connect/python), never the system
 python3, so apt upgrades and a new system Python version cannot break it.
 """
 
+import json
 import os
 import pwd
 import signal
@@ -34,6 +37,7 @@ import subprocess
 import sys
 import time
 
+SERVER = "https://connect.acutrotech.com"   # the only server this box connects to
 DEFAULT_DIR = "/var/lib/acu-connect"
 CONFIG_DIR = os.environ.get("ACU_CONFIG_DIR") or DEFAULT_DIR
 CONFIG = os.path.join(CONFIG_DIR, "agent.json")
@@ -66,6 +70,26 @@ child = None
 
 def log(message):
     print(f"acu-connect-service: {message}", flush=True)
+
+
+def linked_server():
+    """The server agent.json links to, or None when it cannot be read. Read as root from
+    the desktop user's directory: no symlinks, no FIFOs, nothing large."""
+    try:
+        fd = os.open(CONFIG, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            server = json.loads(fh.read(65537)).get("server")
+    except (OSError, ValueError, AttributeError):
+        return None
+    finally:
+        os.close(fd)
+    return server.rstrip("/") if isinstance(server, str) else None
 
 
 def link():
@@ -178,6 +202,7 @@ def client_env(user):
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{UID}")
     env["WAYLAND_DISPLAY"] = wayland_display(env)
     env.setdefault("ACU_CONFIG_DIR", CONFIG_DIR)
+    env["ACU_SERVER"] = SERVER
     return env
 
 
@@ -271,6 +296,9 @@ def main():
             why = "the first-boot wizard's session is still running; reboot (or restart lightdm) to end it"
         elif user is None:
             why = f"there is no user with uid {UID}; waiting for one"
+        elif (server := linked_server()) != SERVER:
+            why = (f"this box connects only to {SERVER}, and the link is to {server or 'an unreadable server'}: "
+                   "link it again with sudo acu-connect signin --force")
         else:
             why = None
         if why:

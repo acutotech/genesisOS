@@ -3,9 +3,8 @@
 # NAME=value lines (never run as shell). The service reads every line; the
 # acu-connect command reads the ACU_* settings and the proxy variables.
 #
-# Server for signin, status and signout. The running client always uses the server
-# the box was linked to, so change this before linking, not after.
-#ACU_SERVER=https://connect.acutrotech.com
+# The server is always https://connect.acutrotech.com: signin links there, and the
+# service starts the client only for a link to it. ACU_SERVER here is ignored.
 # a proxy, if the box reaches the internet only through one
 #HTTPS_PROXY=http://proxy.example:3128
 #NO_PROXY=localhost,127.0.0.1

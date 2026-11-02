@@ -8,6 +8,7 @@ from .http import request
 RECEIVE_TIMEOUT = 60
 RETRIES = 2
 RETRY_SECONDS = 2
+MAX_BATCH_CHARS = 600 * 1024  # the server accepts up to 1 MB per request
 
 
 class Closed(Exception):
@@ -41,7 +42,13 @@ class Outbox:
 
     async def drain(self):
         while self.waiting and not self.failed:
-            batch, self.waiting = self.waiting, []
+            size, count = 0, 0
+            for text in self.waiting:
+                if count and size + len(text) > MAX_BATCH_CHARS:
+                    break
+                size += len(text)
+                count += 1
+            batch, self.waiting = self.waiting[:count], self.waiting[count:]
             try:
                 await self.deliver(batch)
             except Exception:
