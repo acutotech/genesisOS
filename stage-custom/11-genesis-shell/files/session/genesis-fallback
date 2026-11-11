@@ -22,7 +22,7 @@ MSG="Genesis Shell could not start, so this basic desktop was started instead.
 The reason is at the end of $LOG.
 Right-click the desktop for a menu with a terminal and Log Out.
 To use the stock Raspberry Pi desktop from the next login, run:
-  sudo genesis-helper session rpd"
+  sudo /usr/lib/genesis-settings/genesis-helper session rpd"
 
 if command -v zenity > /dev/null 2>&1; then
 	zenity --warning --title="Genesis OS" --width=520 --text="$MSG" &

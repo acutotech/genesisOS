@@ -277,6 +277,16 @@ assert_eq "$(cat "${ROOTFS_DIR}/etc/genesis/session")" "genesis" "Genesis record
 assert_grep '^/usr/lib/genesis-settings/genesis-helper session genesis$' "${CHROOT_LOG}"
 assert_file "${ROOTFS_DIR}/usr/lib/genesis-settings/genesis_settings.py"
 assert_exec "${ROOTFS_DIR}/usr/lib/genesis-settings/genesis-helper"
+# The fallback desktop prints the command that switches to the stock desktop, and
+# it is on screen exactly when Genesis is broken: it has to be a command the image
+# can run. The helper is not on the PATH, so the hint must name the installed file.
+hint_cmd="$(sed -nE 's/^[[:space:]]*sudo ([^[:space:]]+) session rpd.*/\1/p' "${ROOTFS_DIR}/usr/bin/genesis-fallback")"
+if [[ "${hint_cmd}" == /* ]] && [ -x "${ROOTFS_DIR}${hint_cmd}" ] \
+	&& cmp -s "${ROOTFS_DIR}${hint_cmd}" "${STAGE_DIR}/12-genesis-settings/files/genesis-helper"; then
+	ok "genesis-fallback's hint names the installed helper (${hint_cmd})"
+else
+	fail "genesis-fallback's hint must name the helper by the path 12-genesis-settings installs (it names '${hint_cmd}')"
+fi
 assert_exec "${ROOTFS_DIR}/usr/bin/genesis-settings"
 assert_file "${ROOTFS_DIR}/usr/share/applications/genesis-settings.desktop"
 assert_grep 'rc do_i2c 0 ' "${CHROOT_LOG}"
