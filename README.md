@@ -117,7 +117,7 @@ into apps for Windows, macOS (Apple silicon) and Linux.
 
 | Field | Default |
 | --- | --- |
-| Image | *Download latest* (the newest GitHub release, checksum-verified) or *Choose file* (`.img`, `.img.xz`, `.img.gz`, or the `.zip` artifact) |
+| Image | *Download latest* (the newest GitHub release, checksum-verified; while there is no full release, the newest pre-release) or *Choose file* (`.img`, `.img.xz`, `.img.gz`, or the `.zip` artifact) |
 | Storage | removable cards and USB drives only; the disk your computer runs from is never listed |
 | User name, password | `nodoai`, password required (the image has none) |
 | Host name | `nodobox` (`nodobox.local`) |
@@ -138,6 +138,13 @@ logins only" without a key are refused before writing. A zone your computer
 does not know (its time zone data may be older than the box's) is passed on,
 and the box reports it in `genesis-setup-result.txt` if it does not know it
 either.
+
+*Download latest* (and `--image latest`) takes the latest full release. While
+the repository has none, it takes the newest pre-release that carries an
+`.img.xz` image instead, checked against that release's `SHA256SUMS` like any
+other, and the status line names it: `Downloading image_….img.xz (pre-release
+v1.0.3-Beta)`. Drafts are never used. As soon as a full release exists it wins,
+even over a newer pre-release.
 
 * **Windows:** run `genesis-imager-windows-x64.exe`; it asks for administrator
   rights (needed to write a disk). SmartScreen may warn about an unsigned app:

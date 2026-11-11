@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -838,6 +839,164 @@ class DeviceListTest(unittest.TestCase):
         infos = {k: v for k, v in self.APFS_INFOS.items() if k.startswith("disk") and k != "disk3"}
         devices = self.macos(infos, self.APFS_LISTING, True)
         self.assertNotIn("/dev/disk0", [d.path for d in devices])
+
+
+class FakeResponse(io.BytesIO):
+    """What urlopen returns, as far as download_latest looks at it."""
+
+    def __init__(self, body: bytes):
+        super().__init__(body)
+        self.headers = {"Content-Length": str(len(body))}
+
+
+class DownloadLatestTest(unittest.TestCase):
+    """'Download latest' with urllib.request.urlopen stubbed: nothing here reaches the network."""
+
+    DOWNLOADS = "https://github.com/acutotech/genesisOS/releases/download"
+    NO_RELEASE = "No Genesis OS release is published yet"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="genesis-imager-test-"))
+        self.routes = {}        # URL -> body (bytes), JSON value, or the exception class and arguments urlopen raises
+        self.requested = []
+        self.stages = []
+        patches = [mock.patch.object(g, "cache_dir", return_value=self.tmp),
+                   mock.patch("urllib.request.urlopen", side_effect=self.urlopen)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def urlopen(self, req, timeout=None):
+        url = req if isinstance(req, str) else req.full_url
+        self.requested.append(url)
+        if url not in self.routes:
+            raise AssertionError(f"unexpected request: {url}")
+        answer = self.routes[url]
+        if isinstance(answer, tuple):
+            error, *args = answer
+            raise error(*args)
+        return FakeResponse(answer if isinstance(answer, bytes) else json.dumps(answer).encode())
+
+    def http_error(self, url, code, reason):
+        self.routes[url] = (urllib.error.HTTPError, url, code, reason, {}, io.BytesIO(b'{"message": "%s"}' % reason.encode()))
+
+    def no_full_release(self):
+        self.http_error(g.RELEASES_API, 404, "Not Found")
+
+    def release(self, tag, created, *, prerelease=False, draft=False, image=True, sums_ok=True):
+        """A release as the API describes it; its assets are served from self.routes."""
+        files = {f"genesis-imager-{tag}-linux-x86_64": b"imager app " + tag.encode()}
+        if image:
+            files[f"image_{created[:10]}-genesis-os-desktop.img.xz"] = b"image of " + tag.encode() + b"\0" * 3000
+        sums = "".join(f"{hashlib.sha256(data if sums_ok else b'other').hexdigest()}  {name}\n" for name, data in files.items())
+        files["SHA256SUMS"] = sums.encode()
+        assets = []
+        for name, data in files.items():
+            url = f"{self.DOWNLOADS}/{tag}/{name}"
+            self.routes[url] = data
+            assets.append({"name": name, "browser_download_url": url, "size": len(data)})
+        return {"tag_name": tag, "draft": draft, "prerelease": prerelease, "created_at": created,
+                "published_at": None if draft else created, "assets": assets}
+
+    def image_url(self, release):
+        return next(a["browser_download_url"] for a in release["assets"] if a["name"].endswith(".img.xz"))
+
+    def download(self):
+        return g.download_latest(lambda stage, fraction: self.stages.append(stage))
+
+    def test_full_release_is_downloaded_as_before(self):
+        rel = self.release("v1.0.0", "2026-11-01T10:00:00Z")
+        self.routes[g.RELEASES_API] = rel
+        path = self.download()
+        self.assertEqual(path, self.tmp / "image_2026-11-01-genesis-os-desktop.img.xz")
+        self.assertEqual(path.read_bytes(), self.routes[self.image_url(rel)])
+        self.assertEqual(self.requested, [g.RELEASES_API, f"{self.DOWNLOADS}/v1.0.0/SHA256SUMS", self.image_url(rel)],
+                         "a full release needs no look at the list")
+        self.assertEqual(set(self.stages), {"Downloading image_2026-11-01-genesis-os-desktop.img.xz"})
+        self.assertEqual(list(self.tmp.iterdir()), [path], "no .part file is left")
+
+    def test_prerelease_is_downloaded_when_there_is_no_full_release(self):
+        self.no_full_release()
+        beta3 = self.release("v1.0.3-Beta", "2026-11-10T09:00:00Z", prerelease=True)
+        beta2 = self.release("v1.0.2-Beta", "2026-11-03T09:00:00Z", prerelease=True)
+        self.routes[g.RELEASES_LIST_API] = [beta3, beta2]
+        path = self.download()
+        self.assertEqual(path.name, "image_2026-11-10-genesis-os-desktop.img.xz")
+        self.assertEqual(path.read_bytes(), self.routes[self.image_url(beta3)])
+        self.assertEqual(self.requested, [g.RELEASES_API, g.RELEASES_LIST_API, f"{self.DOWNLOADS}/v1.0.3-Beta/SHA256SUMS",
+                                          self.image_url(beta3)])
+        self.assertEqual(set(self.stages), {"Downloading image_2026-11-10-genesis-os-desktop.img.xz (pre-release v1.0.3-Beta)"})
+
+    def test_newest_prerelease_with_an_image_wins(self):
+        self.no_full_release()
+        draft = self.release("v1.0.5-Beta", "2026-11-12T09:00:00Z", prerelease=True, draft=True)
+        uploading = self.release("v1.0.4-Beta", "2026-11-11T09:00:00Z", prerelease=True, image=False)
+        beta3 = self.release("v1.0.3-Beta", "2026-11-10T09:00:00Z", prerelease=True)
+        beta2 = self.release("v1.0.2-Beta", "2026-11-03T09:00:00Z", prerelease=True)
+        for order in ([draft, uploading, beta3, beta2], [beta2, beta3, uploading, draft]):   # whatever order the list has
+            with self.subTest(order=[r["tag_name"] for r in order]):
+                self.routes[g.RELEASES_LIST_API] = order
+                self.assertEqual(g.find_release()["tag_name"], "v1.0.3-Beta")
+        self.assertEqual(self.download().read_bytes(), self.routes[self.image_url(beta3)])
+
+    def test_no_release_at_all(self):
+        self.no_full_release()
+        self.routes[g.RELEASES_LIST_API] = []
+        with self.assertRaisesRegex(g.ImagerError, self.NO_RELEASE):
+            self.download()
+        self.assertEqual(self.requested, [g.RELEASES_API, g.RELEASES_LIST_API])
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_only_drafts_and_releases_without_an_image(self):
+        self.no_full_release()
+        self.routes[g.RELEASES_LIST_API] = [
+            self.release("v1.0.4-Beta", "2026-11-11T09:00:00Z", prerelease=True, draft=True),
+            self.release("v1.0.3-Beta", "2026-11-10T09:00:00Z", prerelease=True, image=False),
+        ]
+        with self.assertRaisesRegex(g.ImagerError, self.NO_RELEASE):
+            self.download()
+        self.assertEqual(self.requested, [g.RELEASES_API, g.RELEASES_LIST_API], "nothing is downloaded")
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_only_a_404_leads_to_the_list(self):
+        self.http_error(g.RELEASES_API, 403, "rate limit exceeded")
+        with self.assertRaisesRegex(g.ImagerError, "Could not reach GitHub.*403"):
+            self.download()
+        self.assertEqual(self.requested, [g.RELEASES_API])
+        self.requested.clear()
+        self.no_full_release()
+        self.routes[g.RELEASES_LIST_API] = (urllib.error.URLError, "timed out")
+        with self.assertRaisesRegex(g.ImagerError, "Could not reach GitHub.*timed out"):
+            self.download()
+        self.assertEqual(self.requested, [g.RELEASES_API, g.RELEASES_LIST_API])
+
+    def test_prerelease_is_checked_against_its_checksums(self):
+        self.no_full_release()
+        self.routes[g.RELEASES_LIST_API] = [self.release("v1.0.3-Beta", "2026-11-10T09:00:00Z", prerelease=True, sums_ok=False)]
+        with self.assertRaisesRegex(g.ImagerError, "checksum mismatch"):
+            self.download()
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_image_already_downloaded_still_says_it_is_a_prerelease(self):
+        self.no_full_release()
+        beta3 = self.release("v1.0.3-Beta", "2026-11-10T09:00:00Z", prerelease=True)
+        self.routes[g.RELEASES_LIST_API] = [beta3]
+        first = self.download()
+        self.stages.clear()
+        self.requested.clear()
+        self.assertEqual(self.download(), first)
+        self.assertNotIn(self.image_url(beta3), self.requested, "the verified copy is used again")
+        self.assertEqual(self.stages, ["Already downloaded: image_2026-11-10-genesis-os-desktop.img.xz (pre-release v1.0.3-Beta)"])
+
+    def test_cli_names_the_prerelease(self):
+        self.no_full_release()
+        self.routes[g.RELEASES_LIST_API] = [self.release("v1.0.3-Beta", "2026-11-10T09:00:00Z", prerelease=True)]
+        with mock.patch.object(g, "scan_image", side_effect=g.ImagerError("stop after the download")), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, mock.patch("sys.stderr", new_callable=io.StringIO):
+            rc = g.cli(["--image", "latest", "--output", str(self.tmp / "out.img"), "--password", "pw1234", "--wifi-ssid", ""])
+        self.assertEqual(rc, 1)
+        self.assertIn("Downloading image_2026-11-10-genesis-os-desktop.img.xz (pre-release v1.0.3-Beta): 100.0%", out.getvalue())
 
 
 class MiscTest(unittest.TestCase):

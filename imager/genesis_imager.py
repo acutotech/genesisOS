@@ -55,6 +55,8 @@ from typing import BinaryIO, Callable, Optional
 
 VERSION = "1.0.0"
 RELEASES_API = "https://api.github.com/repos/acutotech/genesisOS/releases/latest"
+# /releases/latest never answers with a pre-release; this list is where those are found
+RELEASES_LIST_API = "https://api.github.com/repos/acutotech/genesisOS/releases?per_page=10"
 
 SECTOR = 512
 SETUP_FILE = "genesis-setup.txt"
@@ -868,25 +870,50 @@ def cache_dir() -> Path:
     return path
 
 
-def download_latest(progress: Optional[Callable[[str, float], None]] = None, cancel: Optional[threading.Event] = None) -> Path:
-    """Download the newest Genesis OS release image (checked against its SHA256SUMS)."""
-    report = progress or (lambda _s, _f: None)
-    req = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json", "User-Agent": f"genesis-imager/{VERSION}"})
+def _github_json(url: str):
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": f"genesis-imager/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.load(resp)
+
+
+def _release_images(release: dict) -> list:
+    """Names of the release's .img.xz assets, in the order GitHub lists them."""
+    return [a["name"] for a in release.get("assets") or [] if a["name"].endswith(".img.xz")]
+
+
+def find_release() -> dict:
+    """The release 'Download latest' takes: the latest full release, else the newest pre-release with an image."""
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            release = json.load(resp)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise ImagerError("No Genesis OS release is published yet. Download the image from the build's "
-                              "artifacts (genesis-os.zip) and use 'Choose file'.") from exc
+        try:
+            return _github_json(RELEASES_API)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+        # 404: no full release. GitHub leaves pre-releases out of /releases/latest, so look at the list.
+        releases = _github_json(RELEASES_LIST_API)
+    except OSError as exc:       # HTTPError and URLError are OSErrors
         raise ImagerError(f"Could not reach GitHub: {exc}") from exc
-    except OSError as exc:
-        raise ImagerError(f"Could not reach GitHub: {exc}") from exc
+    usable = [r for r in releases if not r.get("draft") and _release_images(r)]
+    if not usable:
+        raise ImagerError("No Genesis OS release is published yet. Download the image from the build's "
+                          "artifacts (genesis-os.zip) and use 'Choose file'.")
+    # the order /releases/latest itself goes by; max() keeps GitHub's (newest first) for equal dates
+    return max(usable, key=lambda r: r.get("created_at") or "")
+
+
+def download_latest(progress: Optional[Callable[[str, float], None]] = None, cancel: Optional[threading.Event] = None) -> Path:
+    """Download the newest Genesis OS release image (checked against its SHA256SUMS).
+
+    A pre-release is taken only while no full release exists, and the progress text then says so.
+    """
+    report = progress or (lambda _s, _f: None)
+    release = find_release()
     assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
-    images = [n for n in assets if n.endswith(".img.xz")]
+    images = _release_images(release)
     if not images:
         raise ImagerError(f"Release {release.get('tag_name')} has no .img.xz image.")
     name = images[0]
+    what = f"{name} (pre-release {release.get('tag_name')})" if release.get("prerelease") else name
     expected = ""
     if "SHA256SUMS" in assets:
         with urllib.request.urlopen(assets["SHA256SUMS"], timeout=30) as resp:
@@ -896,6 +923,7 @@ def download_latest(progress: Optional[Callable[[str, float], None]] = None, can
                     expected = parts[0]
     dest = cache_dir() / name
     if dest.exists() and expected and _sha256_file(dest) == expected:
+        report(f"Already downloaded: {what}", 1.0)
         return dest
     tmp = dest.with_suffix(dest.suffix + ".part")
     with urllib.request.urlopen(assets[name], timeout=60) as resp, open(tmp, "wb") as out:
@@ -911,7 +939,7 @@ def download_latest(progress: Optional[Callable[[str, float], None]] = None, can
             out.write(block)
             h.update(block)
             done += len(block)
-            report(f"Downloading {name}", done / total if total else 0.0)
+            report(f"Downloading {what}", done / total if total else 0.0)
     if expected and h.hexdigest() != expected:
         tmp.unlink(missing_ok=True)
         raise ImagerError("The download is corrupt (checksum mismatch). Try again.")
@@ -1113,7 +1141,8 @@ def cli(argv: list) -> int:
     p.add_argument("--version", action="version", version=f"Genesis Imager {VERSION}")
     p.add_argument("--list-devices", action="store_true", help="list cards and USB drives, then exit")
     p.add_argument("--all", action="store_true", help="with --list-devices or --device: include non-removable disks")
-    p.add_argument("--image", help="image file (.img, .img.xz, .img.gz, or a .zip holding one); 'latest' downloads the newest release")
+    p.add_argument("--image", help="image file (.img, .img.xz, .img.gz, or a .zip holding one); 'latest' downloads the newest "
+                                   "release (a pre-release while no full release exists)")
     target = p.add_mutually_exclusive_group()
     target.add_argument("--device", help="card or drive to write, e.g. /dev/sdb, /dev/disk4, \\\\.\\PhysicalDrive2")
     target.add_argument("--output", help="write a customised image file instead of a card")
