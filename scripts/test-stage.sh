@@ -5,7 +5,8 @@
 # scripts (exported variables, log, on_chroot, sub-stage order, the
 # executable-bit rule), runs the stage against a throw-away root filesystem and
 # asserts on the result in several scenarios. *-packages, *-debconf and
-# *-patches need apt/quilt and are only syntax-checked.
+# *-patches need apt/quilt and are only syntax-checked. Last, build-local.sh is
+# run against stand-ins for git, docker and pi-gen to check what it forwards.
 #
 # What this does NOT prove: that the packages exist in trixie, that the image
 # boots, or that cloud-init accepts the generated files on a device.
@@ -480,6 +481,44 @@ if (cd "${STAGE_DIR}/08-python" && PYTHON_LATEST=3.14.9 ./00-run.sh > /dev/null 
 else
 	fail "PYTHON_LATEST=3.14.9 should be accepted"
 fi
+
+# ===================================================================================
+echo "build-local.sh: every custom.conf knob set in the environment is forwarded"
+# The real script, run up to where pi-gen would start: git, docker and pi-gen are
+# stand-ins, so no network, no Docker, no root. A knob reaches the build container
+# only through build-info.env, so every knob set in the environment must be in it
+# (ENABLE_I2C once was not: the script's pattern for knob names had no digits).
+# The names are read here as "every assignment in custom.conf", on purpose not the
+# way build-local.sh reads them.
+BL="${WORK}/build-local"
+mkdir -p "${BL}/repo/scripts" "${BL}/repo/stage-custom" "${BL}/bin" "${BL}/pi-gen/.git" "${BL}/pi-gen/deploy"
+cp "${REPO_DIR}/scripts/build-local.sh" "${BL}/repo/scripts/"
+cp "${REPO_DIR}/config" "${BL}/repo/"
+cp "${REPO_DIR}/stage-custom/custom.conf" "${BL}/repo/stage-custom/"
+# shellcheck source=/dev/null
+for stage in $(. "${REPO_DIR}/config" && echo "${BASE_STAGES:-stage0 stage1 stage2}"); do
+	mkdir -p "${BL}/pi-gen/${stage}"
+done
+printf '#!/bin/sh\necho stand-in\n' > "${BL}/bin/git"      # fetch, checkout, rev-parse
+printf '#!/bin/sh\nexit 0\n' > "${BL}/bin/docker"          # only looked up, never run
+printf '#!/bin/sh\nexit 0\n' > "${BL}/pi-gen/build-docker.sh"
+chmod +x "${BL}/bin/git" "${BL}/bin/docker" "${BL}/pi-gen/build-docker.sh"
+mapfile -t KNOBS < <(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "${REPO_DIR}/stage-custom/custom.conf" | tr -d '=')
+knob_env=()
+for knob in "${KNOBS[@]}"; do knob_env+=("${knob}=from-env-${knob}"); done
+BUILD_INFO="${BL}/repo/stage-custom/build-info.env"
+if env -i PATH="${BL}/bin:${PATH}" PI_GEN_DIR="${BL}/pi-gen" "${knob_env[@]}" \
+	"${BL}/repo/scripts/build-local.sh" > "${BL}/out.log" 2>&1; then
+	ok "build-local.sh runs against a stand-in pi-gen"
+else
+	fail "build-local.sh failed against a stand-in pi-gen: $(tail -n 3 "${BL}/out.log" | tr '\n' ' ')"
+fi
+assert_grep '^ENABLE_I2C=from-env-ENABLE_I2C$' "${BUILD_INFO}"
+not_forwarded=""
+for knob in "${KNOBS[@]}"; do
+	grep -qxF -- "${knob}=from-env-${knob}" "${BUILD_INFO}" 2> /dev/null || not_forwarded="${not_forwarded} ${knob}"
+done
+assert_eq "${not_forwarded# }" "" "all ${#KNOBS[@]} custom.conf knobs reach build-info.env"
 
 # ===================================================================================
 echo

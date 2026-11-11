@@ -39,7 +39,7 @@ NATIVE=0
 
 # Every knob of stage-custom/custom.conf (the VAR="${VAR:-default}" lines) may be
 # overridden from the environment; the list is derived so it cannot go stale.
-mapfile -t FORWARDED_VARS < <(sed -nE 's/^([A-Z_]+)="\$\{\1:-.*/\1/p' "${STAGE_DIR}/custom.conf")
+mapfile -t FORWARDED_VARS < <(sed -nE 's/^([A-Z][A-Z0-9_]*)="\$\{\1:-.*/\1/p' "${STAGE_DIR}/custom.conf")
 
 usage() {
 	sed -n '2,/^set -euo pipefail/{/^set -euo pipefail/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
