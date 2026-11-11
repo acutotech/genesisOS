@@ -1,0 +1,1021 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Genesis OS: the desktop for the NodoAI box</title>
+<meta name="description" content="Genesis OS is a Raspberry Pi OS image with its own desktop: Genesis Shell, a glass panel, launcher, control center and notifications written for the Raspberry Pi 5 inside the NodoAI box.">
+<meta name="theme-color" content="#070b12">
+<meta name="color-scheme" content="dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Genesis OS">
+<meta property="og:description" content="A Raspberry Pi OS image with its own desktop, written for the Raspberry Pi 5 inside the NodoAI box.">
+<meta property="og:image" content="assets/img/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/img/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+<link rel="preload" href="assets/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/css/site.css">
+<script>document.documentElement.className += ' js';</script>
+</head>
+<body>
+
+<!-- icons: drawn for this site (the desktop itself uses the Papirus icon theme) -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9.2a14 14 0 0 1 19 0M5.8 12.7a9.2 9.2 0 0 1 12.4 0M9 16.1a4.5 4.5 0 0 1 6 0"/><circle cx="12" cy="19.2" r="1.1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-bt" viewBox="0 0 24 24"><path d="M7 7.5l10 9-5 4.5V3l5 4.5-10 9"/></symbol>
+    <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4zM15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.6"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15zM10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.2A8 8 0 0 1 9.8 4.5a8 8 0 1 0 9.7 9.7z"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3.2l1.4-2h6.8l1.4 2H20v10.5H4z"/><circle cx="12" cy="13" r="3.2"/></symbol>
+    <symbol id="i-display" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="11" rx="1.6"/><path d="M9 20h6M12 16v4"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7 6.6a7.5 7.5 0 1 0 10 0"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 4.5H6.5v15H14M10.5 12H20M16.5 8.5L20 12l-3.5 3.5"/></symbol>
+    <symbol id="i-restart" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.2-5.1M19 4.5v4h-4"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3.2l1.2 2.4 2.6.5 1.9-1.7 2 2-1.7 1.9.5 2.6 2.4 1.1v2l-2.4 1.2-.5 2.6 1.7 1.9-2 2-1.9-1.7-2.6.5L12 20.8l-1.2-2.4-2.6-.5-1.9 1.7-2-2 1.7-1.9-.5-2.6L3.2 12l2.4-1.2.5-2.6-1.7-1.9 2-2 1.9 1.7 2.6-.5z" transform="translate(12 12) scale(.92) translate(-12 -12)"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3"/><path d="M15.5 15.5L20 20"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.6"/><path d="M10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.2"/><path d="M7.5 10l3 2.5-3 2.5M12.5 15h4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a1.5 1.5 0 0 1 1.5-1.5h4.2l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 3.8 5.2 3.8 8.5S14.6 18.1 12 20.5c-2.6-2.4-3.8-5.2-3.8-8.5S9.400 5.9 12 3.5z"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="M8.500 7.500L4 12l4.500 4.500M15.500 7.500L20 12l-4.500 4.500M13.500 5l-3 14"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11.200L12 4.500l8 6.700V19.500h-5.500v-5h-5v5H4z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9.500 7V4.800h5V7M7 7l.8 12.500h8.400L17 7M10.200 10.500v6M13.800 10.500v6"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.500 3.500h7.500l4 4V20.500H6.500zM14 3.500v4h4M9.500 12.500h5.500M9.500 16h5.500"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.500l7 2.600v5.400c0 4.300-2.700 7.400-7 9-4.300-1.600-7-4.700-7-9V6.100z"/><path d="M9 12l2.200 2.200L15.200 10"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6.500" height="6.500" rx="1.600"/><rect x="13.500" y="4" width="6.500" height="6.500" rx="1.600"/><rect x="4" y="13.500" width="6.500" height="6.500" rx="1.600"/><rect x="13.500" y="13.500" width="6.500" height="6.500" rx="1.600"/></symbol>
+    <symbol id="i-cc" viewBox="0 0 24 24"><rect x="3.500" y="6" width="17" height="5" rx="2.500"/><rect x="3.500" y="13" width="17" height="5" rx="2.500"/><circle cx="16.800" cy="8.500" r="1.300" fill="currentColor" stroke="none"/><circle cx="7.200" cy="15.500" r="1.300" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 4l8.500 4.500L12 13 3.500 8.500zM4.500 12.200L12 16.200l7.500-4M4.500 15.800L12 19.800l7.500-4"/></symbol>
+    <symbol id="i-sd" viewBox="0 0 24 24"><path d="M7 3.500h7.500L18.500 7.500V20.500H7zM10 7v3M12.500 7v3M15 8v2"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="14" r="3.800"/><path d="M10.800 11.200L19.500 4M16 7l2.500 2.500M13.500 9l2 2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-4.900L19 9M19 12a7 7 0 0 1-12 4.900L5 15M19 5v4h-4M5 19v-4h4"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 2.200a10 10 0 0 0-3.200 19.500c.5.100.700-.200.700-.500v-1.800c-2.800.600-3.400-1.200-3.400-1.200-.500-1.200-1.100-1.500-1.100-1.500-.900-.600.100-.600.100-.600 1 .100 1.500 1 1.500 1 .900 1.500 2.400 1.100 2.900.800.100-.700.400-1.100.600-1.400-2.200-.300-4.600-1.100-4.600-5 0-1.100.400-2 1-2.700-.100-.300-.400-1.300.100-2.700 0 0 .800-.300 2.800 1a9.500 9.500 0 0 1 5 0c1.900-1.300 2.700-1 2.700-1 .500 1.400.200 2.400.100 2.700.600.700 1 1.600 1 2.700 0 3.900-2.300 4.700-4.600 5 .400.300.700.900.700 1.900v2.800c0 .300.200.600.700.500A10 10 0 0 0 12 2.200z"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M12 3.500l8 4.200v8.600l-8 4.200-8-4.200V7.700zM4 7.700l8 4.300 8-4.300M12 12v8.500"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.500 12S6 5.500 12 5.500 21.500 12 21.500 12 18 18.500 12 18.500 2.500 12 2.500 12z"/><circle cx="12" cy="12" r="2.800"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.500 3L5.500 13.500H11l-1 7.500 8-10.500H12.500z"/></symbol>
+  </defs>
+</svg>
+
+<a class="skip" href="#main">Skip to content</a>
+<div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
+
+<header class="nav" id="nav">
+  <a class="nav-brand" href="#top" aria-label="Genesis OS, top of page">
+    <span class="logo-mark" aria-hidden="true"></span>
+    <span class="nav-name">Genesis&nbsp;OS</span>
+  </a>
+  <nav class="nav-links" id="nav-menu" aria-label="Sections">
+    <a href="#desktop">Desktop</a>
+    <a href="#glass">Design</a>
+    <a href="#imager">Imager</a>
+    <a href="#developers">Developers</a>
+    <a href="#hardware">Hardware</a>
+    <a href="#remote">Remote</a>
+    <a href="#quality">Quality</a>
+    <a href="#everything">All features</a>
+  </nav>
+  <div class="nav-actions">
+    <a class="icon-btn" href="https://github.com/acutotech/genesisOS" aria-label="Genesis OS on GitHub"><svg><use href="#i-github"/></svg></a>
+    <a class="btn btn-primary btn-sm" href="#download">Get Genesis OS</a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-menu" aria-label="Menu"><span></span><span></span></button>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ================================================================== hero -->
+<section class="hero" id="top">
+  <canvas class="hero-aurora" id="aurora" aria-hidden="true"></canvas>
+  <canvas class="hero-stars" id="stars" aria-hidden="true"></canvas>
+  <div class="hero-streak" aria-hidden="true"></div>
+  <div class="hero-vignette" aria-hidden="true"></div>
+
+  <div class="hero-inner">
+    <div class="hero-logo" aria-hidden="true"><span class="hero-logo-glow"></span><span class="hero-logo-mark"></span></div>
+    <p class="eyebrow hero-eyebrow"><span>Raspberry Pi OS</span><i></i><span>Debian trixie</span><i></i><span>64-bit</span></p>
+    <h1 class="hero-title"><span class="line"><span>Genesis</span></span> <span class="line"><span class="thin">OS</span></span></h1>
+    <p class="hero-lead">A desktop written for one machine. Our own panel, launcher, control center and notifications, drawn in glass on the Raspberry&nbsp;Pi&nbsp;5 inside the NodoAI box.</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary btn-lg magnetic" href="#download"><svg><use href="#i-down"/></svg><span>Get Genesis OS</span></a>
+      <a class="btn btn-ghost btn-lg magnetic" href="#desktop"><span>Explore the desktop</span><svg><use href="#i-arrow"/></svg></a>
+    </div>
+    <ul class="hero-facts" aria-label="At a glance">
+      <li><b>Pi&nbsp;5</b><span>built and tuned for it first</span></li>
+      <li><b>1 process</b><span>draws the whole shell</span></li>
+      <li><b>0 passwords</b><span>inside the image</span></li>
+      <li><b>580+ checks</b><span>before an image is built</span></li>
+    </ul>
+  </div>
+  <a class="hero-scroll" href="#desktop" aria-label="Scroll to the desktop"><span></span></a>
+</section>
+
+<!-- ============================================================== desktop -->
+<section class="tour" id="desktop" aria-labelledby="desktop-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">Genesis Shell</p>
+    <h2 id="desktop-title">The whole desktop.<br><span class="silver">Go on, click it.</span></h2>
+    <p class="lead">Panel, launcher, control center, notifications, on-screen display, power dialog and wallpaper are one program we wrote, running on labwc, the compositor Raspberry Pi ships and tests on the Pi&nbsp;5.</p>
+  </div>
+
+  <div class="tour-grid">
+    <div class="tour-steps" id="tour-steps">
+
+      <article class="step is-active" data-state="desktop">
+        <p class="step-keys"><span class="step-n">01</span> The panel</p>
+        <h3>A floating glass panel</h3>
+        <p>The Genesis logo opens the launcher. The dock holds your pinned apps and every running one, with an indicator. The clock opens the calendar and notifications. The status pill opens the control center.</p>
+        <ul class="ticks">
+          <li>Pinned by default: Chromium, VS Code, Files, Terminal, Genesis Settings</li>
+          <li>Click to focus or minimise; right-click to pin, unpin or close</li>
+          <li>Top or bottom of the screen, floating or docked</li>
+        </ul>
+      </article>
+
+      <article class="step" data-state="launcher">
+        <p class="step-keys"><span class="step-n">02</span> <kbd>Super</kbd> <kbd>Super</kbd>+<kbd>Space</kbd> <kbd>Super</kbd>+<kbd>A</kbd></p>
+        <h3>A launcher that fills the screen</h3>
+        <p>Every app over the blurred wallpaper. Start typing and the grid narrows as you type; pick a category chip, or move with the arrow keys and press Enter.</p>
+        <ul class="ticks">
+          <li>Search with type-ahead and category chips</li>
+          <li>Seven columns of 64-pixel icons by default</li>
+          <li>Settings, lock and power one click away</li>
+        </ul>
+      </article>
+
+      <article class="step" data-state="cc">
+        <p class="step-keys"><span class="step-n">03</span> <kbd>Super</kbd>+<kbd>C</kbd></p>
+        <h3>Control center</h3>
+        <p>Volume and output device, brightness when the screen has a backlight, and tiles for the things you switch often.</p>
+        <ul class="ticks">
+          <li>Wi-Fi with a network list and password entry</li>
+          <li>Bluetooth: paired devices, connect and disconnect</li>
+          <li>Do Not Disturb, screenshot and display settings; Night Light appears once <code>wlsunset</code> is installed</li>
+        </ul>
+      </article>
+
+      <article class="step" data-state="nc">
+        <p class="step-keys"><span class="step-n">04</span> <kbd>Super</kbd>+<kbd>N</kbd></p>
+        <h3>Notifications that are really the system's</h3>
+        <p>Genesis Shell is the desktop's notification server, so every app's messages arrive as toasts with their buttons, images and urgency, and wait for you behind the clock.</p>
+        <ul class="ticks">
+          <li>Notification center with a calendar beside this session's history</li>
+          <li>Do Not Disturb and an unread badge on the panel</li>
+          <li>Up to four toasts at once; critical ones stay until you dismiss them</li>
+        </ul>
+      </article>
+
+      <article class="step" data-state="sensors">
+        <p class="step-keys"><span class="step-n">05</span> NodoAI sensor boxes</p>
+        <h3>Plug in a sensor. The desktop notices.</h3>
+        <p>The sensor bar stays hidden until a NodoAI sensor box answers on the I²C bus, then fades in on the right edge with one tile per box. Click a tile for its address, bus and the time it connected.</p>
+        <ul class="ticks">
+          <li>Boxes A to K, scanned every 2 seconds without blocking the shell</li>
+          <li>A notification when a box connects or disconnects</li>
+          <li>A lost probe never flickers the bar: gone means two missed scans</li>
+          <li>It shows which boxes are connected, not their readings; reading a sensor is your program's job</li>
+        </ul>
+      </article>
+
+      <article class="step" data-state="osd">
+        <p class="step-keys"><span class="step-n">06</span> Volume and brightness keys</p>
+        <h3>On-screen display</h3>
+        <p>Press a volume or brightness key and a small glass pill shows the level, then gets out of the way. Screenshots go to <code>~/Pictures/Screenshots</code> and the clipboard with <kbd>Print</kbd>, or an area with <kbd>Shift</kbd>+<kbd>Print</kbd>.</p>
+      </article>
+
+      <article class="step" data-state="power">
+        <p class="step-keys"><span class="step-n">07</span> <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Del</kbd> or the power key</p>
+        <h3>Power dialog</h3>
+        <p>Lock, log out, restart or shut down from one dialog. <kbd>Super</kbd>+<kbd>L</kbd> locks straight away, with <code>swaylock</code> dressed in the Genesis colours.</p>
+      </article>
+
+      <article class="step" data-state="windows">
+        <p class="step-keys"><span class="step-n">08</span> <kbd>Super</kbd>+<kbd>←</kbd> <kbd>→</kbd> <kbd>Alt</kbd>+<kbd>Tab</kbd></p>
+        <h3>Windows that snap into place</h3>
+        <p>Rounded windows with shadows. Snap and maximise with <kbd>Super</kbd> and the arrow keys or by dragging to an edge, switch with a preview of the window you are about to pick, and spread your work over four workspaces.</p>
+        <ul class="ticks">
+          <li><kbd>Super</kbd>+<kbd>1</kbd>…<kbd>4</kbd> workspaces, <kbd>Super</kbd>+<kbd>F</kbd> full screen, <kbd>Super</kbd>+<kbd>Q</kbd> closes a window</li>
+          <li><kbd>Super</kbd>+<kbd>T</kbd> terminal, <kbd>Super</kbd>+<kbd>E</kbd> files, <kbd>Super</kbd>+<kbd>B</kbd> browser, <kbd>Super</kbd>+<kbd>I</kbd> settings</li>
+          <li><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> screen magnifier, <kbd>Super</kbd>+<kbd>=</kbd> and <kbd>Super</kbd>+<kbd>-</kbd> to zoom</li>
+        </ul>
+      </article>
+
+    </div>
+
+    <div class="tour-device">
+      <div class="device" id="device">
+        <div class="device-screen">
+          <div class="gd-viewport" id="gd-viewport">
+
+            <!-- the desktop, laid out at 1280x720 and scaled to fit -->
+            <div class="gd" id="gd" data-state="desktop" data-wall="horizon" data-panel="top">
+              <div class="gd-wall" aria-hidden="true"></div>
+              <div class="gd-dim" aria-hidden="true"></div>
+
+              <div class="gd-icons" aria-hidden="true">
+                <span class="gd-icon"><i class="ic ic-folder"><svg><use href="#i-home"/></svg></i><b>Home</b></span>
+                <span class="gd-icon"><i class="ic ic-trash"><svg><use href="#i-trash"/></svg></i><b>Trash</b></span>
+                <span class="gd-icon"><i class="ic ic-folder"><svg><use href="#i-folder"/></svg></i><b>Projects</b></span>
+                <span class="gd-icon"><i class="ic ic-folder"><svg><use href="#i-folder"/></svg></i><b>Sensor Logs</b></span>
+                <span class="gd-icon"><i class="ic ic-file"><svg><use href="#i-file"/></svg></i><b>readings.csv</b></span>
+                <span class="gd-icon"><i class="ic ic-file"><svg><use href="#i-file"/></svg></i><b>Notes.txt</b></span>
+              </div>
+
+              <div class="gd-window gd-win-term" id="gd-term" aria-hidden="true">
+                <div class="gd-titlebar"><span class="gd-title">nodoai@nodobox: ~</span><span class="gd-winbtns"><i></i><i></i><i class="close"></i></span></div>
+                <pre class="gd-term-body"><span class="p">nodoai@nodobox</span>:<span class="d">~</span> $ python --version
+Python 3.10.22
+<span class="p">nodoai@nodobox</span>:<span class="d">~</span> $ python3.15 --version
+Python 3.15.1
+<span class="p">nodoai@nodobox</span>:<span class="d">~</span> $ <span class="caret"></span></pre>
+              </div>
+              <div class="gd-window gd-win-files" aria-hidden="true">
+                <div class="gd-titlebar"><span class="gd-title">Projects</span><span class="gd-winbtns"><i></i><i></i><i class="close"></i></span></div>
+                <div class="gd-files-body">
+                  <span><i class="ic ic-folder"><svg><use href="#i-folder"/></svg></i>sensors</span>
+                  <span><i class="ic ic-folder"><svg><use href="#i-folder"/></svg></i>dashboard</span>
+                  <span><i class="ic ic-file"><svg><use href="#i-file"/></svg></i>main.py</span>
+                  <span><i class="ic ic-file"><svg><use href="#i-file"/></svg></i>README.md</span>
+                </div>
+              </div>
+
+              <div class="gd-panel" role="group" aria-label="Panel">
+                <div class="gd-panel-left">
+                  <button class="gd-pbtn gd-logo" type="button" data-toggle="launcher" aria-label="Applications (Super)"><span class="logo-mark"></span></button>
+                  <i class="gd-sep"></i>
+                  <span class="gd-dock" id="gd-dock"></span>
+                </div>
+                <button class="gd-pbtn gd-clock" type="button" data-toggle="nc" aria-label="Calendar and notifications"><span id="gd-clock">Wed 11 Nov&nbsp;&nbsp;&nbsp;10:24</span></button>
+                <div class="gd-panel-right">
+                  <button class="gd-pbtn gd-pill" type="button" data-toggle="cc" aria-label="Control center">
+                    <b class="gd-badge" id="gd-badge">1</b>
+                    <svg><use href="#i-wifi"/></svg><svg><use href="#i-bt"/></svg><svg><use href="#i-vol"/></svg><svg><use href="#i-cc"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- launcher -->
+              <div class="gd-launcher" id="gd-launcher" aria-hidden="true">
+                <div class="gd-search"><svg><use href="#i-search"/></svg><span class="gd-search-text" id="gd-search-text" data-placeholder="Search apps"></span></div>
+                <div class="gd-chips" id="gd-chips"></div>
+                <div class="gd-apps" id="gd-apps"></div>
+                <p class="gd-empty" id="gd-empty">No matching apps</p>
+                <div class="gd-launcher-foot">
+                  <span class="gd-user"><i class="gd-avatar">N</i>nodoai</span>
+                  <span class="gd-foot-btns"><i><svg><use href="#i-gear"/></svg></i><i><svg><use href="#i-lock"/></svg></i><i class="danger"><svg><use href="#i-power"/></svg></i></span>
+                </div>
+              </div>
+
+              <!-- control center -->
+              <div class="gd-card gd-cc" id="gd-cc" aria-hidden="true">
+                <div class="gd-cc-head">
+                  <i class="gd-avatar lg">N</i>
+                  <span class="gd-who"><b>nodoai</b><small>nodobox</small></span>
+                  <span class="gd-round" title="Settings"><svg><use href="#i-gear"/></svg></span>
+                  <span class="gd-round" title="Lock screen"><svg><use href="#i-lock"/></svg></span>
+                  <button class="gd-round danger" type="button" data-toggle="power" aria-label="Power"><svg><use href="#i-power"/></svg></button>
+                </div>
+                <label class="gd-slider"><svg><use href="#i-vol"/></svg><input type="range" min="0" max="100" value="62" id="gd-vol" aria-label="Volume"></label>
+                <div class="gd-link"><span>HDMI audio output</span><svg><use href="#i-chev"/></svg></div>
+                <label class="gd-slider"><svg><use href="#i-sun"/></svg><input type="range" min="10" max="100" value="100" id="gd-bright" aria-label="Brightness"></label>
+                <div class="gd-tiles">
+                  <button class="gd-tile on" type="button" data-tile="wifi"><i><svg><use href="#i-wifi"/></svg></i><span><b>Wi-Fi</b><small>NodoAI</small></span></button>
+                  <button class="gd-tile on" type="button" data-tile="bt"><i><svg><use href="#i-bt"/></svg></i><span><b>Bluetooth</b><small>On</small></span></button>
+                  <button class="gd-tile" type="button" data-tile="dnd"><i><svg><use href="#i-bell"/></svg></i><span><b>Do Not Disturb</b><small>Off</small></span></button>
+                  <button class="gd-tile" type="button" data-tile="displays"><i><svg><use href="#i-display"/></svg></i><span><b>Displays</b><small>Arrange screens</small></span></button>
+                  <button class="gd-tile" type="button" data-tile="shot"><i><svg><use href="#i-camera"/></svg></i><span><b>Screenshot</b><small>Whole screen</small></span></button>
+                </div>
+              </div>
+
+              <!-- notification center -->
+              <div class="gd-card gd-nc" id="gd-nc" aria-hidden="true">
+                <div class="gd-nc-left">
+                  <p class="gd-date" id="gd-date">Wednesday, 11 November 2026</p>
+                  <div class="gd-calbox">
+                    <div class="gd-cal-head"><span><i>‹</i><b id="gd-cal-month">November</b><i>›</i></span><span><i>‹</i><b id="gd-cal-year">2026</b><i>›</i></span></div>
+                    <div class="gd-cal" id="gd-cal"></div>
+                  </div>
+                </div>
+                <div class="gd-nc-right">
+                  <div class="gd-nc-head"><b>Notifications</b><span>Do Not Disturb <i class="gd-switch" id="gd-dnd-switch"></i></span></div>
+                  <div class="gd-notes" id="gd-notes">
+                    <div class="gd-note"><i class="ic ic-sensor"><svg><use href="#i-chip"/></svg></i><span><b>Sensor C connected</b><small>Sensor box C is on I²C address 0x18 (bus 1).</small></span><em>now</em></div>
+                  </div>
+                  <p class="gd-clear">Clear all</p>
+                </div>
+              </div>
+
+              <!-- toast -->
+              <div class="gd-card gd-toast" id="gd-toast" aria-hidden="true">
+                <i class="ic ic-sensor"><svg><use href="#i-chip"/></svg></i>
+                <span><small>Sensors</small><b>Sensor C connected</b><em>Sensor box C is on I²C address 0x18 (bus 1).</em></span>
+                <u>×</u>
+              </div>
+
+              <!-- sensor bar and card -->
+              <div class="gd-sensors" id="gd-sensors" role="group" aria-label="Sensor bar">
+                <span class="gd-sensors-head" aria-hidden="true"><svg><use href="#i-chip"/></svg></span>
+                <span class="gd-sensors-sep" aria-hidden="true"></span>
+                <button class="gd-stile" type="button" style="--i:0" data-box="a" data-addr="0x10" aria-label="Sensor box A"><img src="assets/img/sensors/sensor-a.svg" alt="" width="36" height="36"></button>
+                <button class="gd-stile sel" type="button" style="--i:1" data-box="c" data-addr="0x18" aria-label="Sensor box C"><img src="assets/img/sensors/sensor-c.svg" alt="" width="36" height="36"></button>
+                <button class="gd-stile" type="button" style="--i:2" data-box="f" data-addr="0x24" aria-label="Sensor box F"><img src="assets/img/sensors/sensor-f.svg" alt="" width="36" height="36"></button>
+              </div>
+              <div class="gd-card gd-scard" id="gd-scard" aria-live="polite">
+                <p class="gd-scard-cap"><span id="gd-scard-cap">SENSOR C</span><i aria-hidden="true">×</i></p>
+                <img class="gd-scard-icon" id="gd-scard-icon" src="assets/img/sensors/sensor-c.svg" alt="" width="68" height="68">
+                <p class="gd-scard-title" id="gd-scard-title">Sensor box C</p>
+                <p class="gd-scard-status"><span><i></i>Connected</span></p>
+                <dl><dt>I²C address</dt><dd id="gd-scard-addr">0x18</dd><dt>Bus</dt><dd>i2c-1</dd><dt>Connected at</dt><dd id="gd-since">10:23</dd></dl>
+              </div>
+
+              <!-- on-screen display -->
+              <div class="gd-card gd-osd" id="gd-osd" aria-hidden="true"><svg><use href="#i-vol"/></svg><span class="gd-osd-bar"><i id="gd-osd-fill"></i></span><b id="gd-osd-val">62%</b></div>
+
+              <!-- power dialog -->
+              <div class="gd-scrim" id="gd-scrim" aria-hidden="true"></div>
+              <div class="gd-card gd-power" id="gd-power" aria-hidden="true">
+                <p class="gd-power-title">Power</p>
+                <p class="gd-power-sub">nodoai on nodobox</p>
+                <div class="gd-power-btns">
+                  <span><i><svg><use href="#i-lock"/></svg></i>Lock</span>
+                  <span><i><svg><use href="#i-logout"/></svg></i>Log Out</span>
+                  <span><i><svg><use href="#i-restart"/></svg></i>Restart</span>
+                  <span><i><svg><use href="#i-power"/></svg></i>Shut Down</span>
+                </div>
+                <button class="gd-cancel" type="button" data-toggle="desktop">Cancel</button>
+              </div>
+
+              <!-- alt-tab switcher -->
+              <div class="gd-card gd-switcher" id="gd-switcher" aria-hidden="true">
+                <span class="sel"><b>LXTerminal</b><em>nodoai@nodobox: ~</em></span>
+                <span><b>File Manager PCManFM</b><em>Projects</em></span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        <div class="device-stand" aria-hidden="true"></div>
+      </div>
+
+      <div class="playground" aria-label="Customise the demo">
+        <div class="pg-group">
+          <span class="pg-label">Wallpaper</span>
+          <div class="pg-walls" id="pg-walls" role="radiogroup" aria-label="Wallpaper">
+            <button type="button" role="radio" aria-checked="true" data-wall="horizon" title="Horizon" aria-label="Horizon"></button>
+            <button type="button" role="radio" aria-checked="false" data-wall="aurora" title="Aurora" aria-label="Aurora"></button>
+            <button type="button" role="radio" aria-checked="false" data-wall="midnight" title="Midnight" aria-label="Midnight"></button>
+            <button type="button" role="radio" aria-checked="false" data-wall="silverwave" title="Silverwave" aria-label="Silverwave"></button>
+            <button type="button" role="radio" aria-checked="false" data-wall="graphite" title="Graphite" aria-label="Graphite"></button>
+          </div>
+        </div>
+        <div class="pg-group">
+          <span class="pg-label">Accent</span>
+          <div class="pg-accents" id="pg-accents" role="radiogroup" aria-label="Accent colour">
+            <button type="button" role="radio" aria-checked="true" data-accent="#4f8cff" style="--c:#4f8cff" title="Azure (default)" aria-label="Azure (default)"></button>
+            <button type="button" role="radio" aria-checked="false" data-accent="#7c5cff" style="--c:#7c5cff" title="Violet" aria-label="Violet"></button>
+            <button type="button" role="radio" aria-checked="false" data-accent="#2fb8a6" style="--c:#2fb8a6" title="Teal" aria-label="Teal"></button>
+            <button type="button" role="radio" aria-checked="false" data-accent="#ff7a59" style="--c:#ff7a59" title="Coral" aria-label="Coral"></button>
+            <button type="button" role="radio" aria-checked="false" data-accent="#ffb347" style="--c:#ffb347" title="Amber" aria-label="Amber"></button>
+            <button type="button" role="radio" aria-checked="false" data-accent="#3ddc97" style="--c:#3ddc97" title="Mint" aria-label="Mint"></button>
+          </div>
+        </div>
+        <div class="pg-group">
+          <span class="pg-label">Panel</span>
+          <div class="pg-seg" id="pg-panel" role="radiogroup" aria-label="Panel position">
+            <button type="button" role="radio" aria-checked="true" data-panel="top">Top</button>
+            <button type="button" role="radio" aria-checked="false" data-panel="bottom">Bottom</button>
+          </div>
+        </div>
+        <p class="pg-note">An interactive recreation, drawn in your browser from the shell's own colours, sizes and labels; the real shell is Python and GTK. These are real settings: the five wallpapers and six accent colours are the ones Genesis Settings offers, and the desktop follows them live.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================ glass -->
+<section class="section glass" id="glass" aria-labelledby="glass-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">Design</p>
+    <h2 id="glass-title">Frosted glass,<br><span class="silver">at zero GPU cost.</span></h2>
+    <p class="lead">labwc does not blur what is behind a window. So the shell does not ask it to. Every surface is painted over a blurred, darkened copy of the wallpaper that was prepared once.</p>
+  </div>
+
+  <div class="glass-grid">
+    <div class="layers" id="layers" data-reveal aria-hidden="true">
+      <div class="layer l1"><span>Wallpaper</span></div>
+      <div class="layer l2"><span>Blurred, darkened copy</span></div>
+      <div class="layer l3"><span>Glass tint</span></div>
+      <div class="layer l4"><span>Edges and highlight</span></div>
+    </div>
+    <ol class="layer-notes">
+      <li data-reveal style="--d:0"><b>The wallpaper</b><span>Five ship with the image: Horizon, Aurora, Midnight, Silverwave and Graphite.</span></li>
+      <li data-reveal style="--d:1"><b>A blurred copy, made once</b><span>Prepared when the wallpaper changes, not on every frame. It is the wallpaper that shows through, not the windows behind: the panel reserves its space, and a card simply covers what is under it.</span></li>
+      <li data-reveal style="--d:2"><b>A tint you can set</b><span>Deep navy at 62% by default. Glass opacity is a slider in Genesis Settings, from 40% to 95%.</span></li>
+      <li data-reveal style="--d:3"><b>Three lines of light</b><span>A dark outer line, a light inner line and a brighter highlight along the top. Corners at 16 pixels on the panel, 20 on cards and 12 on windows.</span></li>
+    </ol>
+  </div>
+
+  <div class="cards three">
+    <article class="card" data-reveal style="--d:0">
+      <i class="card-ic"><svg><use href="#i-layers"/></svg></i>
+      <h3>Our own shell, not our own compositor</h3>
+      <p>What you see and touch is the shell, so that is what we wrote. Window management stays with labwc, which Raspberry Pi maintains and tunes for the Pi&nbsp;5's GPU.</p>
+    </article>
+    <article class="card" data-reveal style="--d:1">
+      <i class="card-ic"><svg><use href="#i-bolt"/></svg></i>
+      <h3>One program, not seven</h3>
+      <p>Panel, launcher, control center, notifications, on-screen display, power dialog, wallpaper and desktop icons are one Python and GTK process per session, so they share one look and one settings file.</p>
+    </article>
+    <article class="card" data-reveal style="--d:2">
+      <i class="card-ic"><svg><use href="#i-eye"/></svg></i>
+      <h3>Labels you can always read</h3>
+      <p>Each desktop icon label is black or white, whichever contrasts more with the wallpaper right behind it, and is chosen again when the wallpaper changes.</p>
+    </article>
+    <article class="card" data-reveal style="--d:0">
+      <i class="card-ic"><svg><use href="#i-refresh"/></svg></i>
+      <h3>It comes back</h3>
+      <p>If the shell ever stops, the session starts it again, and after five failed starts in a row it falls back to a basic desktop with an explanation. Raspberry Pi's stock desktop stays installed too, selectable on the login screen.</p>
+    </article>
+    <article class="card" data-reveal style="--d:1">
+      <i class="card-ic"><svg><use href="#i-sliders"/></svg></i>
+      <h3>Settings apply live</h3>
+      <p>Wallpaper, accent colour, panel position, glass opacity and screen blanking change the moment you set them in Genesis Settings. No logout.</p>
+    </article>
+    <article class="card" data-reveal style="--d:2">
+      <i class="card-ic"><svg><use href="#i-grid"/></svg></i>
+      <h3>Inter and JetBrains Mono</h3>
+      <p>The typefaces of this page are the typefaces of the desktop, with the Papirus icon theme and a dark, steel-blue look throughout.</p>
+    </article>
+  </div>
+</section>
+
+<!-- =============================================================== imager -->
+<section class="section imager" id="imager" aria-labelledby="imager-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">Genesis Imager</p>
+    <h2 id="imager-title">Your password goes on the card.<br><span class="silver">Never in the image.</span></h2>
+    <p class="lead">A password built into an image is the same on every box, and anyone with the image can read it. Genesis Imager writes your user, password and Wi-Fi onto the card while it flashes, so the box boots straight to the desktop, on the network, with nothing to type on it.</p>
+  </div>
+
+  <div class="imager-grid">
+    <div class="im-window" id="imager-demo" data-reveal aria-label="Illustration of Genesis Imager writing a card">
+      <div class="im-bar"><span class="im-dots"><i></i><i></i><i></i></span><b>Genesis Imager</b></div>
+      <div class="im-body">
+        <div class="im-field"><label>Image</label><span class="im-input"><svg><use href="#i-down"/></svg><em data-type="genesis-os-desktop.img.xz"></em></span></div>
+        <div class="im-field"><label>Storage</label><span class="im-input"><svg><use href="#i-sd"/></svg><em data-type="SD card, 32 GB"></em></span></div>
+        <div class="im-row">
+          <div class="im-field"><label>User name</label><span class="im-input"><em data-type="nodoai"></em></span></div>
+          <div class="im-field"><label>Password</label><span class="im-input"><em data-type="••••••••••••" class="pw"></em></span></div>
+        </div>
+        <div class="im-row">
+          <div class="im-field"><label>Host name</label><span class="im-input"><em data-type="nodobox"></em></span></div>
+          <div class="im-field"><label>Wi-Fi</label><span class="im-input"><em data-type="NodoAI"></em></span></div>
+        </div>
+        <div class="im-row">
+          <div class="im-field"><label>Time zone</label><span class="im-input"><em data-type="Asia/Kolkata"></em></span></div>
+          <div class="im-field"><label>Keyboard</label><span class="im-input"><em data-type="us"></em></span></div>
+        </div>
+        <div class="im-progress"><span class="im-bar-track"><i id="im-fill"></i></span><b id="im-status">Ready</b></div>
+        <div class="im-actions"><span class="im-hint" id="im-hint">Illustration</span><button class="btn btn-primary btn-sm" type="button" id="im-replay">Write</button></div>
+      </div>
+    </div>
+
+    <div class="im-side">
+      <ol class="im-flow" id="im-flow">
+        <li data-reveal style="--d:0"><i>1</i><div><b>You type it once</b><span>User, password, host name, Wi-Fi, time zone, keyboard, SSH keys. The Imager checks them the way the box will, and refuses a bad value before it writes anything.</span></div></li>
+        <li data-reveal style="--d:1"><i>2</i><div><b>The card gets a hash, not a password</b><span>Your account password is stored as a salted SHA-512 hash with 100,000 rounds, in a small reserved area of the boot partition. The Wi-Fi password has to be usable, so it sits there readable until the first boot.</span></div></li>
+        <li data-reveal style="--d:2"><i>3</i><div><b>It writes, then reads it back</b><span>The whole card, partition table last, then read back to check; on Linux and macOS the card is ejected for you. Only removable cards and USB drives are offered, and the disk your computer runs from is never listed.</span></div></li>
+        <li data-reveal style="--d:3"><i>4</i><div><b>First boot applies it, then wipes it</b><span>It happens early in the first start, before the network, SSH and the login screen. The settings are then overwritten on the card, and a summary without passwords is left in <code>genesis-setup-result.txt</code> for you.</span></div></li>
+      </ol>
+      <ul class="boot-list" id="boot-list" aria-label="What first boot applies">
+        <li>User renamed</li><li>Password set</li><li>Wi-Fi saved</li><li>Host name</li><li>Time zone</li><li>Keyboard</li><li>SSH keys</li><li class="wipe">Settings wiped from the card</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="platforms" data-reveal>
+    <div><b>Windows</b><span>x64, single .exe</span></div>
+    <div><b>macOS</b><span>Apple silicon app</span></div>
+    <div><b>Linux</b><span>x86-64, single file</span></div>
+    <div><b>Command line</b><span>every option, with Python 3.9+</span></div>
+    <p>One Python file using only the standard library. The apps are not code-signed yet, so Windows and macOS ask you to confirm the first launch. Flashing with Raspberry Pi Imager, balenaEtcher or <code>dd</code> still works: the standard first-boot wizard then asks for a user name and password.</p>
+  </div>
+</section>
+
+<!-- =========================================================== developers -->
+<section class="section developers" id="developers" aria-labelledby="dev-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">For developers</p>
+    <h2 id="dev-title">Two Pythons for you.<br><span class="silver">One for the system. Kept apart.</span></h2>
+    <p class="lead">The system's Python runs the desktop, apt and the settings, so it is left exactly as Debian ships it. Yours live on their own, where nothing in the OS depends on them.</p>
+  </div>
+
+  <div class="dev-grid">
+    <div class="pythons" data-reveal>
+      <div class="py py-user">
+        <span class="py-tag">yours · default</span>
+        <b>Python 3.10</b>
+        <code>python</code> <code>pip</code> <code>python3.10</code>
+        <small>3.10.22, the interpreter VS Code is set to</small>
+      </div>
+      <div class="py py-user">
+        <span class="py-tag">yours · newer</span>
+        <b>Python 3.15</b>
+        <code>python3.15</code> <code>pip3.15</code>
+        <small>3.15.1, for trying what is new</small>
+      </div>
+      <div class="py py-sys">
+        <span class="py-tag">the system's</span>
+        <b>Python 3.13</b>
+        <code>python3</code>
+        <small>Debian's own. apt, the shell and Genesis Settings run on it; pip refuses to install into it</small>
+      </div>
+      <p class="py-note">Your Pythons are self-contained builds under <code>/opt/python</code>. <code>pip install</code> without a virtual environment goes to <code>~/.local</code>. Need another version? <code>uv</code> is installed: <code>uv python install 3.14</code>. Python 3.10 is end-of-life, so plan to move your code on, and some packages have no 64-bit ARM wheels for 3.15 yet.</p>
+    </div>
+
+    <div class="term" id="term-dev" data-reveal aria-label="Terminal demonstration">
+      <div class="term-bar"><span class="im-dots"><i></i><i></i><i></i></span><b>nodoai@nodobox: ~</b></div>
+      <pre class="term-body" data-term='[
+        {"c":"python --version","o":"Python 3.10.22"},
+        {"c":"python3.15 --version","o":"Python 3.15.1"},
+        {"c":"genesis-python --help","o":"genesis-python: which Python is which on Genesis OS.\n\n  genesis-python          list the system and user Pythons\n  genesis-python --help   this text"},
+        {"c":"python3.15 -m venv ~/venvs/myproject","o":""}
+      ]'></pre>
+    </div>
+  </div>
+
+  <div class="cards three">
+    <article class="card" data-reveal style="--d:0">
+      <i class="card-ic"><svg><use href="#i-code"/></svg></i>
+      <h3>Visual Studio Code, ready</h3>
+      <p>Installed from Microsoft's repository with the Python extensions, already pointed at your default Python, in a dark theme with telemetry switched off. It is pinned to the panel.</p>
+    </article>
+    <article class="card" data-reveal style="--d:1">
+      <i class="card-ic"><svg><use href="#i-globe"/></svg></i>
+      <h3>Chromium as the browser</h3>
+      <p>The default browser for links, web pages and PDF files, pinned to the panel, on <kbd>Super</kbd>+<kbd>B</kbd>. The Raspberry Pi desktop applications come along too.</p>
+    </article>
+    <article class="card" data-reveal style="--d:2">
+      <i class="card-ic"><svg><use href="#i-terminal"/></svg></i>
+      <h3>The Pi libraries are there</h3>
+      <p><code>gpiozero</code>, <code>rpi-lgpio</code> and <code>picamera2</code> ship in the system Python. In yours: <code>pip install gpiozero rpi-lgpio</code>, or just run <code>python3</code>.</p>
+    </article>
+  </div>
+</section>
+
+<!-- ============================================================= hardware -->
+<section class="section hardware" id="hardware" aria-labelledby="hw-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">Hardware</p>
+    <h2 id="hw-title">The pins are already on.</h2>
+    <p class="lead">I²C, SPI and the serial port are switched on in the image, with SSH and VNC for when there is no screen. Point at an interface to see where it lives on the header.</p>
+  </div>
+
+  <div class="hw-grid">
+    <div class="hw-chips" id="hw-chips" data-reveal>
+      <button type="button" class="hw-chip on" data-bus="i2c"><b>I²C</b><span>GPIO 2 and 3 · on</span></button>
+      <button type="button" class="hw-chip on" data-bus="spi"><b>SPI</b><span>GPIO 7 to 11 · on</span></button>
+      <button type="button" class="hw-chip on" data-bus="uart"><b>Serial port</b><span>GPIO 14 and 15 · on</span></button>
+      <button type="button" class="hw-chip off" data-bus="w1"><b>1-Wire</b><span>GPIO 4 · off by default</span></button>
+      <div class="hw-chip static on"><b>SSH</b><span>on · nodobox.local</span></div>
+      <div class="hw-chip static on"><b>VNC</b><span>on · wayvnc, port 5900</span></div>
+    </div>
+
+    <div class="header-wrap" data-reveal>
+      <div class="gpio" id="gpio" aria-label="The 40-pin header, with the pins of the selected interface lit"></div>
+      <p class="gpio-cap" id="gpio-cap">I²C: SDA on pin 3, SCL on pin 5</p>
+    </div>
+
+    <div class="scan" data-reveal>
+      <div class="scan-head"><b>Sensor boxes on the bus</b><span>scan 0x10 to 0x3A, every 2 s</span></div>
+      <div class="scan-grid" id="scan-grid" aria-hidden="true"></div>
+      <p class="scan-cap">Eleven NodoAI sensor boxes, A to K. Box A answers at 0x10 to 0x12, box B at 0x14 to 0x16, and so on every four addresses up to K at 0x38 to 0x3A. The desktop shows which boxes are there; reading them is up to your code.</p>
+    </div>
+  </div>
+
+  <div class="boards" data-reveal>
+    <span class="boards-label">Runs on</span>
+    <div class="marquee" aria-label="Raspberry Pi 5 first; also Raspberry Pi 4, 400, 500, Compute Module 4 and 5, Zero 2 W and Raspberry Pi 3">
+      <div class="marquee-track" aria-hidden="true">
+        <b class="first">Raspberry Pi 5</b><b>Raspberry Pi 4</b><b>Pi 400</b><b>Pi 500</b><b>Compute Module 5</b><b>Compute Module 4</b><b>Zero 2 W</b><b>Raspberry Pi 3</b>
+        <b class="first">Raspberry Pi 5</b><b>Raspberry Pi 4</b><b>Pi 400</b><b>Pi 500</b><b>Compute Module 5</b><b>Compute Module 4</b><b>Zero 2 W</b><b>Raspberry Pi 3</b>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =============================================================== remote -->
+<section class="section remote" id="remote" aria-labelledby="remote-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">Remote access</p>
+    <h2 id="remote-title">The box, in a browser tab.</h2>
+    <p class="lead">The Acu Connect client is built in. Link a box once, and its terminal and its desktop open in a browser at connect.acutrotech.com.</p>
+  </div>
+
+  <div class="remote-grid">
+    <div class="route" data-reveal aria-label="Diagram: your browser reaches the box directly when it can, and through the Acu Connect server when it cannot">
+      <svg viewBox="0 0 720 300" role="img" aria-hidden="true">
+        <defs>
+          <linearGradient id="rg" x1="0" x2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity="0"/><stop offset=".5" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient>
+        </defs>
+        <path class="route-line direct" d="M120 210 C 260 290, 460 290, 600 210"/>
+        <path class="route-line relay" d="M120 190 C 200 80, 300 60, 360 60"/>
+        <path class="route-line relay" d="M360 60 C 420 60, 520 80, 600 190"/>
+        <path class="route-flow direct" d="M120 210 C 260 290, 460 290, 600 210"/>
+        <path class="route-flow relay" d="M120 190 C 200 80, 300 60, 360 60"/>
+        <path class="route-flow relay r2" d="M360 60 C 420 60, 520 80, 600 190"/>
+        <g class="node" transform="translate(120 200)"><circle r="44"/><text y="-2">Your</text><text y="14">browser</text></g>
+        <g class="node hub" transform="translate(360 60)"><rect x="-108" y="-26" width="216" height="52" rx="26"/><text y="5">connect.acutrotech.com</text></g>
+        <g class="node" transform="translate(600 200)"><circle r="44"/><text y="-2">Genesis</text><text y="14">box</text></g>
+        <text class="route-label" x="360" y="284">direct, when the two can reach each other</text>
+        <text class="route-label" x="360" y="118">relayed through the server, when they cannot</text>
+      </svg>
+    </div>
+
+    <div class="remote-side">
+      <div class="term small" id="term-remote" data-reveal aria-label="Terminal demonstration">
+        <div class="term-bar"><span class="im-dots"><i></i><i></i><i></i></span><b>link a box</b></div>
+        <pre class="term-body" data-term='[
+          {"c":"sudo acu-connect signin","o":"# approve the 8-character code in the dashboard"},
+          {"c":"sudo acu-connect status","o":"# linked? server reachable?"},
+          {"c":"journalctl -u acu-connect -f","o":""}
+        ]'></pre>
+      </div>
+      <ul class="ticks wide">
+        <li data-reveal style="--d:0">A terminal as the box's user, and the desktop either view-only or with mouse and keyboard</li>
+        <li data-reveal style="--d:1">Starts at every boot and waits quietly until the box is linked</li>
+        <li data-reveal style="--d:2">Runs on its own Python with hash-locked packages, which system updates do not touch</li>
+        <li data-reveal style="--d:3">One server, fixed: it links to connect.acutrotech.com and nowhere else</li>
+        <li data-reveal style="--d:4">Unlink with <code>sudo acu-connect signout</code>; the client stops within seconds</li>
+      </ul>
+      <div class="disclose" data-reveal>
+        <b>What it sends</b>
+        <p>Acu Connect is a service of Acutro Technologies and needs an account there. While a box is linked, the client reports its host name, model, serial number, network addresses and load to that server, and looks up the box's approximate location from its IP address once an hour (<code>ACU_NETWORK_LOCATION=0</code> in <code>/etc/default/acu-connect</code> turns the lookup off). A relayed session passes what is typed and shown through the server, and the server can ask the client to record a terminal session. Nothing is reachable until you link the box, and an image can be built without the client.</p>
+      </div>
+      <p class="fine" data-reveal>On your own network, SSH and VNC are on as well: <code>ssh nodoai@nodobox.local</code>, or any VNC viewer on <code>nodobox.local:5900</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= settings -->
+<section class="section settings" id="settings" aria-labelledby="set-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">Genesis Settings</p>
+    <h2 id="set-title">One app for the whole box.</h2>
+    <p class="lead">Seven pages, from the header pins to the wallpaper. It is in the menu, on the panel, and on <kbd>Super</kbd>+<kbd>I</kbd>.</p>
+  </div>
+
+  <div class="set-window" data-reveal>
+    <div class="set-tabs" role="tablist" aria-label="Genesis Settings pages" id="set-tabs">
+      <button role="tab" aria-selected="true" aria-controls="set-panel" id="tab-interfaces" data-page="interfaces"><svg><use href="#i-chip"/></svg>Interfaces</button>
+      <button role="tab" aria-selected="false" aria-controls="set-panel" id="tab-system" data-page="system" tabindex="-1"><svg><use href="#i-gear"/></svg>System</button>
+      <button role="tab" aria-selected="false" aria-controls="set-panel" id="tab-appearance" data-page="appearance" tabindex="-1"><svg><use href="#i-layers"/></svg>Appearance</button>
+      <button role="tab" aria-selected="false" aria-controls="set-panel" id="tab-connectivity" data-page="connectivity" tabindex="-1"><svg><use href="#i-wifi"/></svg>Connectivity</button>
+      <button role="tab" aria-selected="false" aria-controls="set-panel" id="tab-display" data-page="display" tabindex="-1"><svg><use href="#i-display"/></svg>Display &amp; Sound</button>
+      <button role="tab" aria-selected="false" aria-controls="set-panel" id="tab-software" data-page="software" tabindex="-1"><svg><use href="#i-box"/></svg>Software</button>
+      <button role="tab" aria-selected="false" aria-controls="set-panel" id="tab-about" data-page="about" tabindex="-1"><svg><use href="#i-eye"/></svg>About</button>
+    </div>
+    <div class="set-panel" role="tabpanel" id="set-panel" aria-labelledby="tab-interfaces" tabindex="0"></div>
+  </div>
+</section>
+
+<!-- ============================================================== quality -->
+<section class="section quality" id="quality" aria-labelledby="q-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">Built like a product</p>
+    <h2 id="q-title">Every image is run from the inside<br><span class="silver">before it is released.</span></h2>
+    <p class="lead">The build does not stop at "it compiled". It writes the finished image through Genesis Imager, runs the first-boot setup and the desktop session inside that image, and takes screenshots. A failed check or a blank desktop fails the build, and nothing is released.</p>
+  </div>
+
+  <ol class="pipeline" id="pipeline" data-reveal>
+    <li><i><svg><use href="#i-check"/></svg></i><b>Lint</b><span>shellcheck, yamllint, actionlint</span></li>
+    <li><i><svg><use href="#i-check"/></svg></i><b>Dry run</b><span>every build step, checked without building</span></li>
+    <li><i><svg><use href="#i-check"/></svg></i><b>Shell preview</b><span>the desktop runs headless and is photographed</span></li>
+    <li><i><svg><use href="#i-check"/></svg></i><b>Build</b><span>pi-gen on a native 64-bit ARM runner</span></li>
+    <li><i><svg><use href="#i-check"/></svg></i><b>Smoke test</b><span>first-boot setup and desktop, inside the built image</span></li>
+    <li><i><svg><use href="#i-check"/></svg></i><b>Release</b><span>on a version tag: image, checksums, Imager apps</span></li>
+  </ol>
+
+  <div class="stats" id="stats">
+    <div data-reveal style="--d:0"><b data-count="355">0</b><span>checks on the build steps</span></div>
+    <div data-reveal style="--d:1"><b data-count="99">0</b><span>first-boot checks</span></div>
+    <div data-reveal style="--d:2"><b data-count="57">0</b><span>Imager tests, run on Linux, Windows and macOS</span></div>
+    <div data-reveal style="--d:3"><b data-count="77">0</b><span>shell and remote-access tests</span></div>
+  </div>
+  <p class="fine stats-note" data-reveal>Counted with <code>make test</code> on Linux: 454 assertions in two test scripts and 134 unit tests, a few of which are skipped on Windows and macOS. The smoke test runs inside the built image on the build server, with a virtual screen. Starting a real Raspberry Pi is still the last test, and no automated step replaces it.</p>
+
+  <div class="cards three">
+    <article class="card" data-reveal style="--d:0">
+      <i class="card-ic"><svg><use href="#i-shield"/></svg></i>
+      <h3>No default password</h3>
+      <p>The image has no password in it. You type one into Genesis Imager, or the standard first-boot wizard asks for one.</p>
+    </article>
+    <article class="card" data-reveal style="--d:1">
+      <i class="card-ic"><svg><use href="#i-key"/></svg></i>
+      <h3>Pinned, not trusted</h3>
+      <p>The build's GitHub Actions are pinned to an exact commit. The Python and <code>uv</code> downloads are checked against a SHA-256 kept in the repository, and the remote-access client's packages install only when their hash matches.</p>
+    </article>
+    <article class="card" data-reveal style="--d:2">
+      <i class="card-ic"><svg><use href="#i-refresh"/></svg></i>
+      <h3>Security updates, by itself</h3>
+      <p>Debian and Raspberry Pi security updates install automatically. The system log is kept across reboots with a size cap, and the screen blanks after ten minutes.</p>
+    </article>
+    <article class="card" data-reveal style="--d:0">
+      <i class="card-ic"><svg><use href="#i-box"/></svg></i>
+      <h3>Built with pi-gen</h3>
+      <p>The same tool that produces the official Raspberry Pi OS images, in GitHub Actions or on your own machine with Docker.</p>
+    </article>
+    <article class="card" data-reveal style="--d:1">
+      <i class="card-ic"><svg><use href="#i-file"/></svg></i>
+      <h3>You get the evidence</h3>
+      <p>A release carries the image, its SHA-256 checksums and the list of installed packages. The screenshots taken inside the image are kept with the build run, and each image records the commit it was built from.</p>
+    </article>
+    <article class="card" data-reveal style="--d:2">
+      <i class="card-ic"><svg><use href="#i-sliders"/></svg></i>
+      <h3>Yours to change</h3>
+      <p>The defaults on this page are plain lines in two files, <code>config</code> and <code>custom.conf</code>: the wallpaper, the accent, the Pythons, the interfaces, the pinned apps.</p>
+    </article>
+  </div>
+</section>
+
+<!-- =========================================================== everything -->
+<section class="section everything" id="everything" aria-labelledby="idx-title">
+  <div class="section-head" data-reveal>
+    <p class="eyebrow">The full list</p>
+    <h2 id="idx-title">Everything in the image.<br><span class="silver">One line each.</span></h2>
+    <p class="lead">Every feature of the desktop, its tools and the build, and what it does not do yet. Pick an area, or type a word.</p>
+  </div>
+  <div class="idx" id="idx">
+    <div class="idx-bar">
+      <div class="idx-chips" id="idx-chips" role="group" aria-label="Filter by area">
+        <button type="button" class="idx-chip is-on" data-cat="all" aria-pressed="true">All <i>160</i></button>
+        <button type="button" class="idx-chip" data-cat="desktop" aria-pressed="false">Desktop <i>38</i></button>
+        <button type="button" class="idx-chip" data-cat="windows" aria-pressed="false">Windows and keys <i>11</i></button>
+        <button type="button" class="idx-chip" data-cat="settings" aria-pressed="false">Genesis Settings <i>10</i></button>
+        <button type="button" class="idx-chip" data-cat="imager" aria-pressed="false">Imager and first boot <i>23</i></button>
+        <button type="button" class="idx-chip" data-cat="dev" aria-pressed="false">Developers and apps <i>11</i></button>
+        <button type="button" class="idx-chip" data-cat="system" aria-pressed="false">System and hardware <i>18</i></button>
+        <button type="button" class="idx-chip" data-cat="remote" aria-pressed="false">Remote access <i>16</i></button>
+        <button type="button" class="idx-chip" data-cat="build" aria-pressed="false">Build and tests <i>23</i></button>
+        <button type="button" class="idx-chip" data-cat="limits" aria-pressed="false">Good to know <i>10</i></button>
+      </div>
+      <label class="idx-search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="idx-q" placeholder="Search the list" aria-label="Search the feature list" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <p class="idx-count" id="idx-count" aria-live="polite">160 entries</p>
+    <section class="idx-group" data-cat="desktop" aria-labelledby="idx-h-desktop">
+      <h3 id="idx-h-desktop">Desktop <span>38</span></h3>
+      <ul class="idx-list">
+        <li><b>Floating glass panel</b><span>Logo, dock, clock and status pill on every screen. Top or bottom, floating or docked.</span></li>
+        <li><b>Dock</b><span>Pinned apps and every running one. Click to start, focus, minimise or cycle; right-click for New Window, Pin and Close.</span></li>
+        <li><b>Status pill</b><span>Network and volume at a glance, Bluetooth while it is on, a battery when there is one, and a count of unread notifications.</span></li>
+        <li><b>Full-screen launcher</b><span>Every installed app in a grid over the blurred wallpaper. <kbd>Super</kbd>, <kbd>Super</kbd>+<kbd>Space</kbd> or <kbd>Super</kbd>+<kbd>A</kbd>.</span></li>
+        <li><b>Launcher search</b><span>Type anywhere. Exact and start-of-name matches come first, and Enter starts the top result.</span></li>
+        <li><b>Category chips</b><span>Internet, Development, Office, Graphics, Media, Games, Education, System and Accessories.</span></li>
+        <li><b>Control center</b><span>Volume, sound output, brightness on screens with a backlight, and quick tiles. <kbd>Super</kbd>+<kbd>C</kbd>.</span></li>
+        <li><b>Wi-Fi page</b><span>A list of networks to connect or disconnect, with a password field when one is needed.</span></li>
+        <li><b>Bluetooth page</b><span>Paired devices connect and disconnect with a click. Pairing a new one opens Bluetooth Manager.</span></li>
+        <li><b>Sound output</b><span>Choose which output is the default, right under the volume slider.</span></li>
+        <li><b>Notification server</b><span>Genesis Shell receives the standard desktop notifications of every app and draws them in its own style.</span></li>
+        <li><b>Toasts</b><span>Glass cards beside the panel, up to four at once, six seconds each, with their action buttons. Critical ones stay until dismissed.</span></li>
+        <li><b>Notification center</b><span>A month calendar beside the notifications of this session, newest 60. <kbd>Super</kbd>+<kbd>N</kbd>.</span></li>
+        <li><b>Do Not Disturb</b><span>Holds toasts back and still collects them. Critical notifications come through.</span></li>
+        <li><b>On-screen display</b><span>A glass pill shows the new level when volume or brightness changes.</span></li>
+        <li><b>Power dialog</b><span>Lock, Log Out, Restart, Shut Down. <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Del</kbd> or the power key.</span></li>
+        <li><b>Lock screen</b><span><code>swaylock</code> in the Genesis colours over the blurred wallpaper. <kbd>Super</kbd>+<kbd>L</kbd>.</span></li>
+        <li><b>Screenshots</b><span><kbd>Print</kbd> for the screen, <kbd>Shift</kbd>+<kbd>Print</kbd> for an area. Saved to <code>~/Pictures/Screenshots</code> and copied to the clipboard.</span></li>
+        <li><b>Five wallpapers</b><span>Horizon, Aurora, Midnight, Silverwave and Graphite, each in Full HD and 1440p.</span></li>
+        <li><b>Glass without GPU blur</b><span>Surfaces are painted over a blurred copy of the wallpaper that is prepared once.</span></li>
+        <li><b>Desktop icons</b><span>Files, folders and launchers from <code>~/Desktop</code>, with Home and Trash, laid out in columns.</span></li>
+        <li><b>Readable icon labels</b><span>Each label is white or near-black, whichever reads better on the wallpaper behind it.</span></li>
+        <li><b>Trusted launchers only</b><span>A launcher file on the Desktop runs only if it is marked executable or belongs to an installed app.</span></li>
+        <li><b>Desktop menu</b><span>Right-click the wallpaper: Change Wallpaper, Open Terminal, Open Files, Display Settings, Genesis Settings.</span></li>
+        <li><b>Sensor bar</b><span>Appears on the right edge when a NodoAI sensor box answers on the I²C bus. One tile per box, A to K.</span></li>
+        <li><b>Sensor card</b><span>Click a tile for the box's I²C address, its bus and the time it connected.</span></li>
+        <li><b>Sensor notifications</b><span>A message when a box connects or disconnects while the desktop runs. Gone means two missed scans, so the bar never flickers.</span></li>
+        <li><b>More than one screen</b><span>Wallpaper and a panel on every screen. Cards open on the screen under the pointer.</span></li>
+        <li><b>Accent colour</b><span>One colour for everything active or selected. Six presets in Genesis Settings, any <code>#rrggbb</code> at build time.</span></li>
+        <li><b>Matching app theme</b><span>Applications get a dark theme, the Inter font and Papirus icons to match the shell.</span></li>
+        <li><b>Settings apply live</b><span>Wallpaper, accent, glass opacity and panel settings follow the settings file as soon as it changes. No logout.</span></li>
+        <li><b><code>shell.conf</code></b><span>Every shell option in one plain file, with a system copy and your own copy that wins.</span></li>
+        <li><b><code>genesis-shell-ctl</code></b><span>One command to open the launcher, lock, take a screenshot, send a notification and more. The key bindings use it too.</span></li>
+        <li><b>It restarts itself</b><span>A supervisor starts the shell again after a crash, waiting 1, 2, 4 and then 8 seconds.</span></li>
+        <li><b>Fallback desktop</b><span>After five failed starts in a row, a basic desktop and an explanation appear instead of a black screen.</span></li>
+        <li><b>Genesis session</b><span>"Genesis" is a session on the login screen. Raspberry Pi's stock desktop stays installed beside it.</span></li>
+        <li><b>Themed terminal</b><span>The terminal opens in JetBrains Mono on a dark palette, with 5,000 lines of scrollback.</span></li>
+        <li><b>Lock when idle, if you want</b><span>An option in <code>shell.conf</code> locks the screen shortly before it blanks. It is off by default.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="windows" aria-labelledby="idx-h-windows">
+      <h3 id="idx-h-windows">Windows and keys <span>11</span></h3>
+      <ul class="idx-list">
+        <li><b>GenesisGlass window theme</b><span>Dark title bars, 12-pixel rounded corners and shadows, drawn by labwc.</span></li>
+        <li><b>Snapping</b><span>Drag a window to an edge, or <kbd>Super</kbd>+<kbd>←</kbd> and <kbd>Super</kbd>+<kbd>→</kbd>. <kbd>Super</kbd>+<kbd>↑</kbd> maximises, <kbd>Super</kbd>+<kbd>↓</kbd> minimises.</span></li>
+        <li><b>Window switcher</b><span><kbd>Alt</kbd>+<kbd>Tab</kbd> or <kbd>Super</kbd>+<kbd>Tab</kbd>, with a preview of the window you are about to pick.</span></li>
+        <li><b>Four workspaces</b><span><kbd>Super</kbd>+<kbd>1</kbd> to <kbd>Super</kbd>+<kbd>4</kbd> switch, <kbd>Super</kbd>+<kbd>Shift</kbd> with a number moves the window, <kbd>Super</kbd>+<kbd>PgUp</kbd> and <kbd>Super</kbd>+<kbd>PgDn</kbd> step.</span></li>
+        <li><b>Full screen and close</b><span><kbd>Super</kbd>+<kbd>F</kbd> for full screen. <kbd>Super</kbd>+<kbd>Q</kbd> or <kbd>Alt</kbd>+<kbd>F4</kbd> closes the window.</span></li>
+        <li><b>Screen magnifier</b><span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> switches it on and off. <kbd>Super</kbd>+<kbd>=</kbd> and <kbd>Super</kbd>+<kbd>-</kbd> zoom.</span></li>
+        <li><b>Keys for the main apps</b><span><kbd>Super</kbd>+<kbd>T</kbd> terminal, <kbd>Super</kbd>+<kbd>E</kbd> files, <kbd>Super</kbd>+<kbd>B</kbd> browser, <kbd>Super</kbd>+<kbd>I</kbd> settings.</span></li>
+        <li><b>Touchpad</b><span>Natural scrolling and tap to click are on, and the pad is off while you type.</span></li>
+        <li><b>Screen blanking</b><span>The display switches off after ten minutes without input. Never, 5, 10, 20 or 30 minutes in Genesis Settings.</span></li>
+        <li><b>Keys you can change</b><span>The shortcuts are defaults. Copy the labwc folder to <code>~/.config/genesis/labwc</code> and edit <code>rc.xml</code>.</span></li>
+        <li><b>Close what is open</b><span><kbd>Super</kbd>+<kbd>Esc</kbd> closes the launcher and any open card.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="settings" aria-labelledby="idx-h-settings">
+      <h3 id="idx-h-settings">Genesis Settings <span>10</span></h3>
+      <ul class="idx-list">
+        <li><b>Interfaces page</b><span>Switches for I²C, SPI, the serial port, the serial console, 1-Wire and camera detection, and for SSH and VNC.</span></li>
+        <li><b>System page</b><span>Host name, time zone and language. Auto-login, boot splash and sudo options. Change the password, reboot, shut down.</span></li>
+        <li><b>Appearance page</b><span>Wallpaper grid, six accent colours, panel position, glass opacity from 40% to 95%, and the blank-screen time.</span></li>
+        <li><b>Your own wallpaper</b><span>Browse for a JPEG or PNG picture, and use the current wallpaper on the login screen too.</span></li>
+        <li><b>Connectivity page</b><span>Opens the Wi-Fi, network and Bluetooth tools, sets the Wi-Fi country and shows the box's IP addresses.</span></li>
+        <li><b>Display &amp; Sound page</b><span>Opens the screen-layout tool and the sound mixer.</span></li>
+        <li><b>Software page</b><span>Raspberry Pi Configuration, Recommended software, a system update in a terminal, and Visual Studio Code.</span></li>
+        <li><b>About page</b><span>Image name and build date, Debian base, board, kernel, memory, storage, Pythons, session and source commit.</span></li>
+        <li><b>It asks first</b><span>Changes to system files ask for your password and go through one small helper program.</span></li>
+        <li><b>Opens from anywhere</b><span><kbd>Super</kbd>+<kbd>I</kbd>, the panel, the launcher, the control center and the desktop menu.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="imager" aria-labelledby="idx-h-imager">
+      <h3 id="idx-h-imager">Imager and first boot <span>23</span></h3>
+      <ul class="idx-list">
+        <li><b>Genesis Imager</b><span>Writes the image and your settings to an SD card or USB drive in one step.</span></li>
+        <li><b>Apps for three systems</b><span>Windows x64, macOS on Apple silicon and Linux x86-64, built by the pipeline. No Python needed on those.</span></li>
+        <li><b>Any image file</b><span>Pick an <code>.img</code>, <code>.img.xz</code> or <code>.img.gz</code> file, or a zip that holds one. It is unpacked while it is written.</span></li>
+        <li><b>Download latest</b><span>Asks GitHub for the newest full release and checks the image against that release's SHA-256 list.</span></li>
+        <li><b>Safe card choice</b><span>Only removable cards and USB drives are listed. The disk your computer runs from never is.</span></li>
+        <li><b>Checked again before erasing</b><span>If the chosen card changed since you picked it, nothing is written. A card smaller than the image is refused.</span></li>
+        <li><b>User, password, host name</b><span>Chosen on your computer before the card is written.</span></li>
+        <li><b>Wi-Fi</b><span>Network name, password, country, and a switch for hidden networks.</span></li>
+        <li><b>Time zone and keyboard</b><span>Set per card, so one image serves boxes in different places.</span></li>
+        <li><b>SSH keys</b><span>Add public keys and, if you like, switch password logins off.</span></li>
+        <li><b>Checked before writing</b><span>Settings are validated the way the box will validate them, so a mistake is caught on your computer.</span></li>
+        <li><b>Write, then read back</b><span>The whole card is written with the partition table last, then read back to check.</span></li>
+        <li><b>Customised image file</b><span>With <code>--output</code> the Imager writes a ready-made image file instead of a card.</span></li>
+        <li><b>Command line</b><span>Every setting of the window is also an option, for scripts and machines without a screen.</span></li>
+        <li><b>Remembers your settings</b><span>The window keeps your last choices for next time. It never saves the two passwords.</span></li>
+        <li><b>A hash, not a password</b><span>The card gets a salted SHA-512 hash of the account password, 100,000 rounds.</span></li>
+        <li><b>First-boot service</b><span>Applies the settings early in the first start, before the network, SSH and the login screen.</span></li>
+        <li><b>What first boot sets</b><span>User name, password, host name, Wi-Fi and its country, time zone, keyboard and SSH.</span></li>
+        <li><b>Wiped after use</b><span>The settings are overwritten on the card as soon as they are applied.</span></li>
+        <li><b>First-boot report</b><span>A summary without passwords is left in <code>genesis-setup-result.txt</code> on the boot partition.</span></li>
+        <li><b>Other tools still work</b><span>Raspberry Pi Imager, balenaEtcher or <code>dd</code>. The standard wizard then asks for a user.</span></li>
+        <li><b>You are not locked out</b><span>Key-only SSH is applied only when the account was set up and a key was given.</span></li>
+        <li><b>First-boot log</b><span>What the first start did is written to <code>/var/log/genesis-firstboot.log</code> on the box.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="dev" aria-labelledby="idx-h-dev">
+      <h3 id="idx-h-dev">Developers and apps <span>11</span></h3>
+      <ul class="idx-list">
+        <li><b>Python 3.10 as <code>python</code></b><span>Version 3.10.22 under <code>/opt/python</code>, with <code>pip</code>. The interpreter VS Code is set to.</span></li>
+        <li><b>Python 3.15</b><span>Version 3.15.1, as <code>python3.15</code> and <code>pip3.15</code>.</span></li>
+        <li><b>System Python left alone</b><span>Debian's Python 3.13 stays <code>python3</code>. The desktop and <code>apt</code> run on it, and nothing replaces it.</span></li>
+        <li><b><code>uv</code></b><span>Installed, so more Python versions and virtual environments are one command away.</span></li>
+        <li><b><code>genesis-python</code></b><span>One command that shows which Python is which on the box.</span></li>
+        <li><b>Visual Studio Code</b><span>Installed from Microsoft's repository. The build adds three Python extensions: Python, Pylance and the debugger.</span></li>
+        <li><b>VS Code defaults</b><span>Dark theme, your default Python selected, telemetry and self-update switched off.</span></li>
+        <li><b>Chromium</b><span>The default for links, web pages and PDF files.</span></li>
+        <li><b>The Pi libraries</b><span><code>gpiozero</code>, <code>rpi-lgpio</code> and <code>picamera2</code> are in the system Python.</span></li>
+        <li><b>Command-line tools</b><span><code>git</code>, <code>vim</code>, <code>tmux</code>, <code>jq</code> and <code>tree</code> are added to what Raspberry Pi OS ships.</span></li>
+        <li><b>Desktop applications</b><span>Files, Terminal, Volume Control, Bluetooth Manager and the Raspberry Pi desktop applications.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="system" aria-labelledby="idx-h-system">
+      <h3 id="idx-h-system">System and hardware <span>18</span></h3>
+      <ul class="idx-list">
+        <li><b>Raspberry Pi OS Desktop base</b><span>The full 64-bit Raspberry Pi OS Desktop on Debian trixie, with the Genesis changes on top.</span></li>
+        <li><b>Boards</b><span>Raspberry Pi 5 first. Also Pi 4, 400, 500, Compute Module 4 and 5, Zero 2 W and Pi 3.</span></li>
+        <li><b>I²C, SPI and serial port on</b><span>The three header interfaces are switched on in the image.</span></li>
+        <li><b>Serial console and 1-Wire off</b><span>Left off so they do not get in the way. One switch each in Genesis Settings.</span></li>
+        <li><b>SSH on</b><span>With your password by default. Key-only login is an option in Genesis Imager.</span></li>
+        <li><b>VNC on</b><span>Remote desktop with <code>wayvnc</code> on port 5900, for any VNC viewer.</span></li>
+        <li><b>Genesis boot splash</b><span>The logo on black while the box starts, instead of boot text.</span></li>
+        <li><b>Themed login screen</b><span>The login screen and the terminal login banner carry the Genesis look and name.</span></li>
+        <li><b>Straight to the desktop</b><span>The box logs the user in and opens the Genesis desktop by default. A build setting turns that off.</span></li>
+        <li><b>Inter and JetBrains Mono</b><span>The desktop is set to Inter for the interface and JetBrains Mono for code and the terminal.</span></li>
+        <li><b>A log that survives reboots</b><span>The system journal is kept across reboots and capped at 64 MB so it cannot fill the card.</span></li>
+        <li><b>Automatic security updates</b><span>Debian and Raspberry Pi security updates install by themselves when the box is online.</span></li>
+        <li><b>cloud-init</b><span>Two text files on the boot partition can configure a box on its first start.</span></li>
+        <li><b>Release info</b><span><code>/etc/custom-image-release</code> records the image name, date, source commit and build link.</span></li>
+        <li><b>Defaults you can change</b><span>Host name <code>nodobox</code>, user <code>nodoai</code>, US English, US keyboard, time zone Asia/Kolkata.</span></li>
+        <li><b>No password in the image</b><span>You choose it in Genesis Imager, or the standard first-boot wizard asks for it.</span></li>
+        <li><b>Its own SSH host keys</b><span>Each box generates its SSH host keys on its first start. They are not shared between boxes.</span></li>
+        <li><b>Screenshot and screen-sharing portals</b><span>The desktop portals for screenshots and screen sharing are installed and configured for labwc.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="remote" aria-labelledby="idx-h-remote">
+      <h3 id="idx-h-remote">Remote access <span>16</span></h3>
+      <ul class="idx-list">
+        <li><b>Terminal in a browser</b><span>Once a box is linked, a terminal on it opens at connect.acutrotech.com.</span></li>
+        <li><b>Desktop in a browser</b><span>The same site shows the desktop, view-only or with mouse and keyboard, as pictures about five times a second.</span></li>
+        <li><b>Linking</b><span><code>sudo acu-connect signin</code> prints a link and an 8-character code that you approve in the dashboard.</span></li>
+        <li><b>Status, unlink, logs</b><span><code>acu-connect status</code>, <code>acu-connect signout</code> and <code>journalctl -u acu-connect</code>.</span></li>
+        <li><b>Waits until linked</b><span>The service starts at every boot and waits quietly, instead of failing over and over.</span></li>
+        <li><b>Its own Python</b><span>The client runs on a separate Python 3.14 under <code>/opt/acu-connect</code> that system updates do not change.</span></li>
+        <li><b>Hash-locked packages</b><span>Its 14 Python packages are fixed to exact versions and checked by SHA-256 when the image is built.</span></li>
+        <li><b>Restarts by itself</b><span>If the client stops it is started again, with pauses of 5 to 60 seconds while it keeps failing.</span></li>
+        <li><b>Holds during a rename</b><span>The client is not started while the desktop user is waiting to be renamed.</span></li>
+        <li><b>Link changes apply at once</b><span>Linking again or unlinking takes effect within about a second, with nothing to restart by hand.</span></li>
+        <li><b>One fixed server</b><span>The box connects to connect.acutrotech.com and has no setting for another server.</span></li>
+        <li><b>Relay mode</b><span>When browser and box cannot reach each other directly, the session goes through the server.</span></li>
+        <li><b>Gets through</b><span>WebSockets first, ordinary web requests if those do not get through, and a proxy if you set one.</span></li>
+        <li><b>Settings file</b><span>Plain <code>NAME=value</code> lines in <code>/etc/default/acu-connect</code>, read as values and never run as commands.</span></li>
+        <li><b>Five sessions</b><span>One box accepts up to five sessions at a time.</span></li>
+        <li><b>Optional</b><span>Build with <code>ACU_CONNECT=0</code> to leave the client out of an image.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="build" aria-labelledby="idx-h-build">
+      <h3 id="idx-h-build">Build and tests <span>23</span></h3>
+      <ul class="idx-list">
+        <li><b>Built with pi-gen</b><span>The tool that builds the official Raspberry Pi OS images, with one extra stage of 16 steps.</span></li>
+        <li><b>GitHub Actions build</b><span>On a native 64-bit ARM runner, for the main branch, version tags and manual runs.</span></li>
+        <li><b>Local build</b><span><code>make build</code> with Docker on Linux. A failed build resumes with <code>CONTINUE=1</code>.</span></li>
+        <li><b>One config for both</b><span>The same <code>config</code> file drives local and CI builds. CI stops if it holds a setting it does not pass on.</span></li>
+        <li><b>30 build settings</b><span><code>custom.conf</code> holds 30 settings with their defaults, and an environment variable wins over the file.</span></li>
+        <li><b>Add your own</b><span>Packages, services, boot settings and files are added by editing a few plain files.</span></li>
+        <li><b>Lint</b><span><code>shellcheck</code> on every shell file, <code>yamllint</code>, <code>actionlint</code> and a byte-compile of every Python file.</span></li>
+        <li><b>Dry run of the whole stage</b><span>355 assertions against a throw-away file system. No root rights, no Docker, no image.</span></li>
+        <li><b>First-boot tests</b><span>99 assertions on what the first-boot script writes and which commands it calls.</span></li>
+        <li><b>Unit tests</b><span>134 tests: shell logic, the remote-access supervisor and Genesis Imager.</span></li>
+        <li><b>Imager on three systems</b><span>Its tests run on Linux, Windows and macOS, on Python 3.13 and 3.9.</span></li>
+        <li><b>Headless desktop preview</b><span>Before an image is built, the whole desktop runs with no screen and is photographed. A blank picture fails.</span></li>
+        <li><b>Smoke test in the built image</b><span>The image is written through Genesis Imager, then first boot and the desktop run inside it.</span></li>
+        <li><b>Imager apps check themselves</b><span>Each built app must produce exactly the setup area the image carries.</span></li>
+        <li><b>Actions pinned by commit</b><span>Every action the workflow takes from a GitHub repository is referenced by its full commit hash.</span></li>
+        <li><b>Downloads pinned by SHA-256</b><span>The Python and <code>uv</code> archives are checked against values stored in the repository.</span></li>
+        <li><b>No credentials in the repository</b><span>Passwords come from secrets at build time, and by default the image has none.</span></li>
+        <li><b>Public-repository guard</b><span>In a public repository the workflow stops if a password secret is set, unless you allow it.</span></li>
+        <li><b>Releases on version tags</b><span>A tag publishes the image, package list, checksums and the three Imager apps.</span></li>
+        <li><b>Build log kept on failure</b><span>When a build fails, its log is saved with the run so it can be read without building again.</span></li>
+        <li><b>Troubleshooting guide</b><span>Twenty entries in the README for build, Wi-Fi, SSH, desktop, sensor and Imager problems.</span></li>
+        <li><b>Rebrand from two pictures</b><span>Logos, boot splash and wallpapers are generated from two source images by one script.</span></li>
+        <li><b>Lite build</b><span>The same stage builds an image without the desktop, by changing four settings.</span></li>
+      </ul>
+    </section>
+    <section class="idx-group" data-cat="limits" aria-labelledby="idx-h-limits">
+      <h3 id="idx-h-limits">Good to know <span>10</span></h3>
+      <ul class="idx-list">
+        <li><b>It is a beta</b><span>Releases are tagged <code>v1.x-Beta</code>. Treat it as a beta until a release drops that word.</span></li>
+        <li><b>Tested in the image, not on a Pi</b><span>The automated tests run inside the built image on the build server. No step starts a real Raspberry Pi.</span></li>
+        <li><b>Imager apps are unsigned</b><span>Windows SmartScreen warns, and on macOS the app opens with right-click, Open, the first time.</span></li>
+        <li><b>No on-screen keyboard</b><span>The image installs none, and the shell has no touch-specific parts yet.</span></li>
+        <li><b>No screen reader set up</b><span>There is a magnifier and contrast-checked labels, but no screen reader setup or high-contrast theme.</span></li>
+        <li><b>Brightness needs a backlight</b><span>The slider and brightness keys work on displays with a backlight. An HDMI monitor has none.</span></li>
+        <li><b>Sensor bar shows presence</b><span>It shows which boxes are connected. It does not read or show measurements.</span></li>
+        <li><b>Python 3.10 is end-of-life</b><span>It is the default because existing code needs it. Plan to move on, and expect missing wheels on 3.15.</span></li>
+        <li><b>Wi-Fi with a password or none</b><span>Genesis Imager has no fields for enterprise Wi-Fi with a user name and certificate.</span></li>
+        <li><b>Remote access needs an account</b><span>Acu Connect is a third-party service. Without an account there, use SSH and VNC on your network.</span></li>
+      </ul>
+    </section>
+    <p class="idx-empty" id="idx-empty" hidden>Nothing in the list matches that. Try a shorter word.</p>
+  </div>
+</section>
+
+<!-- ============================================================= download -->
+<section class="section download" id="download" aria-labelledby="dl-title">
+  <div class="dl-card" data-reveal>
+    <div class="dl-glow" aria-hidden="true"></div>
+    <span class="logo-mark xl" aria-hidden="true"></span>
+    <h2 id="dl-title">Get Genesis OS</h2>
+    <p class="lead">Three steps from download to desktop.</p>
+    <ol class="dl-steps">
+      <li><i>1</i><b>Download</b><span>the image and Genesis Imager for your computer from the releases page.</span></li>
+      <li><i>2</i><b>Write</b><span>the card with Genesis Imager: pick the image and the card, type your password and Wi-Fi.</span></li>
+      <li><i>3</i><b>Boot</b><span>The box shows the Genesis logo while it starts, then opens your desktop with the Wi-Fi you typed.</span></li>
+    </ol>
+    <div class="hero-cta">
+      <a class="btn btn-primary btn-lg magnetic" href="https://github.com/acutotech/genesisOS/releases"><svg><use href="#i-down"/></svg><span>Open releases</span></a>
+      <a class="btn btn-ghost btn-lg magnetic" href="https://github.com/acutotech/genesisOS"><svg><use href="#i-github"/></svg><span>Source on GitHub</span></a>
+    </div>
+    <p class="fine">Genesis OS is in beta: releases are tagged <code>v1.x-Beta</code>. Prefer to build it yourself? Clone the repository and run <code>make build</code> (Linux with Docker), or start the <em>Build image</em> workflow in GitHub Actions.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-row">
+    <a class="nav-brand" href="#top"><span class="logo-mark" aria-hidden="true"></span><span class="nav-name">Genesis&nbsp;OS</span></a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/acutotech/genesisOS">GitHub</a>
+      <a href="https://github.com/acutotech/genesisOS/releases">Releases</a>
+      <a href="https://github.com/acutotech/genesisOS#readme">Documentation</a>
+      <a href="https://github.com/acutotech/genesisOS/issues">Report an issue</a>
+    </nav>
+  </div>
+  <p class="footer-fine">Genesis OS is built on Raspberry Pi OS and Debian. Raspberry Pi is a trademark of Raspberry Pi Ltd. Visual Studio Code is a trademark of Microsoft. Acu Connect is a product of Acutro Technologies. This page loads nothing from other sites: fonts (Inter, JetBrains Mono, SIL Open Font License) and images are served from here.</p>
+</footer>
+
+<script src="assets/js/aurora.js" defer></script>
+<script src="assets/js/desktop.js" defer></script>
+<script src="assets/js/site.js" defer></script>
+</body>
+</html>
